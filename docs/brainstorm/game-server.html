@@ -1,0 +1,129 @@
+<h2>Game Server Design</h2>
+<p class="subtitle">C# / .NET — authoritative state machine over WebSocket connections</p>
+
+<div class="mockup">
+  <div class="mockup-header">Internal Architecture</div>
+  <div class="mockup-body" style="padding: 20px; font-size: 12px;">
+
+    <div style="display: flex; gap: 16px; flex-wrap: wrap; justify-content: center;">
+
+      <!-- Internal HTTP API -->
+      <div style="background: #1a2030; border: 1px solid #4466aa; border-radius: 6px; padding: 12px; min-width: 160px; text-align: center;">
+        <div style="color: #88aaff; font-weight: bold; font-size: 12px;">Internal HTTP API</div>
+        <div style="font-size: 10px; color: #667; margin-top: 2px;">from Platform API only</div>
+        <div style="margin-top: 8px; font-size: 11px; color: #aab; line-height: 1.8;">
+          <div>POST /session/create</div>
+          <div>POST /session/result</div>
+          <div style="font-size: 10px; color: #556; margin-top: 4px;">bound to internal network,<br>not exposed publicly</div>
+        </div>
+      </div>
+
+      <div style="display: flex; align-items: center; color: #445; font-size: 18px;">→</div>
+
+      <!-- Session Manager -->
+      <div style="background: #1a2030; border: 1px solid #5577bb; border-radius: 6px; padding: 12px; min-width: 160px; text-align: center;">
+        <div style="color: #88ccff; font-weight: bold; font-size: 12px;">Session Manager</div>
+        <div style="margin-top: 8px; font-size: 11px; color: #aab; line-height: 1.8;">
+          <div>Creates GameSession</div>
+          <div>Issues player tokens</div>
+          <div>Tracks active sessions</div>
+          <div>Handles timeouts &amp; cleanup</div>
+        </div>
+      </div>
+
+      <div style="display: flex; align-items: center; color: #445; font-size: 18px;">→</div>
+
+      <!-- Game Session -->
+      <div style="background: #152015; border: 2px solid #55aa77; border-radius: 6px; padding: 12px; min-width: 180px; text-align: center;">
+        <div style="color: #88ffbb; font-weight: bold; font-size: 12px;">GameSession</div>
+        <div style="font-size: 10px; color: #667; margin-top: 2px;">one per active match</div>
+        <div style="margin-top: 8px; font-size: 11px; color: #aab; line-height: 1.8;">
+          <div style="color: #a8ffc8;">GameState (from CCG.GameLogic)</div>
+          <div>Action queue (serialized)</div>
+          <div>Turn timer</div>
+          <div>Event broadcaster</div>
+          <div>Reconnect buffer</div>
+        </div>
+      </div>
+
+      <div style="display: flex; align-items: center; flex-direction: column; gap: 4px;">
+        <div style="color: #445; font-size: 18px;">↕</div>
+      </div>
+
+      <!-- WebSocket Handler -->
+      <div style="background: #1a2030; border: 1px solid #6655aa; border-radius: 6px; padding: 12px; min-width: 160px; text-align: center;">
+        <div style="color: #bbaaff; font-weight: bold; font-size: 12px;">WebSocket Handler</div>
+        <div style="margin-top: 8px; font-size: 11px; color: #aab; line-height: 1.8;">
+          <div>Authenticate token on connect</div>
+          <div>Route messages to session</div>
+          <div>Detect disconnects</div>
+          <div>Manage spectator connections</div>
+        </div>
+      </div>
+
+    </div>
+  </div>
+</div>
+
+<div class="mockup" style="margin-top: 16px;">
+  <div class="mockup-header">Game Loop — Action Processing</div>
+  <div class="mockup-body" style="padding: 16px; font-family: monospace; font-size: 11px; line-height: 1.9;">
+    <div style="color: #667; margin-bottom: 8px;">// Serialized per-session — no concurrent mutation of GameState</div>
+    <div><span style="color: #a8c8ff;">client</span> sends action <span style="color: #889;">→</span> <span style="color: #88ffbb;">ActionProcessor.Apply(state, action)</span></div>
+    <div style="padding-left: 20px;">
+      <div><span style="color: #ffaa88;">if invalid</span> <span style="color: #889;">→</span> send ErrorEvent to that client only, drop action</div>
+      <div><span style="color: #aaffaa;">if valid</span> <span style="color: #889;">→</span> mutate GameState, produce [ ]GameEvent</div>
+    </div>
+    <div style="padding-left: 20px; margin-top: 4px;">
+      <div><span style="color: #889;">for each event:</span></div>
+      <div style="padding-left: 20px;">
+        <div>scope payload per recipient <span style="color: #667;">(opponent's hand cards are hidden)</span></div>
+        <div>broadcast to Player 1, Player 2, Spectators</div>
+      </div>
+    </div>
+    <div style="margin-top: 8px; color: #667;">// Turn timer runs separately — fires EndTurn action if player times out</div>
+  </div>
+</div>
+
+<div style="display: flex; gap: 16px; flex-wrap: wrap; margin-top: 16px;">
+
+  <div style="flex: 1; min-width: 200px;">
+    <h3>Action Types</h3>
+    <div style="background: #1a1a2a; border-radius: 6px; padding: 12px; font-family: monospace; font-size: 11px; line-height: 1.9; margin-top: 8px;">
+      <div><span style="color: #88ccff;">PlayCard</span>   <span style="color: #667;">{ cardId, targets? }</span></div>
+      <div><span style="color: #88ccff;">Attack</span>     <span style="color: #667;">{ attackerId, targetId }</span></div>
+      <div><span style="color: #88ccff;">EndTurn</span>    <span style="color: #667;">{ }</span></div>
+      <div><span style="color: #88ccff;">Concede</span>    <span style="color: #667;">{ }</span></div>
+    </div>
+  </div>
+
+  <div style="flex: 1; min-width: 220px;">
+    <h3>Event Types (broadcast)</h3>
+    <div style="background: #1a1a2a; border-radius: 6px; padding: 12px; font-family: monospace; font-size: 11px; line-height: 1.9; margin-top: 8px;">
+      <div><span style="color: #a8ffc8;">CardDrawn</span>       <span style="color: #667;">scoped: owner sees card, opponent sees count</span></div>
+      <div><span style="color: #a8ffc8;">CardPlayed</span>      <span style="color: #667;">{ playerId, cardId, targets }</span></div>
+      <div><span style="color: #a8ffc8;">MinionSummoned</span> <span style="color: #667;">{ minionId, attack, health }</span></div>
+      <div><span style="color: #a8ffc8;">DamageDealt</span>    <span style="color: #667;">{ sourceId, targetId, amount }</span></div>
+      <div><span style="color: #a8ffc8;">MinionDied</span>     <span style="color: #667;">{ minionId }</span></div>
+      <div><span style="color: #a8ffc8;">TurnStarted</span>    <span style="color: #667;">{ playerId, timeLimit }</span></div>
+      <div><span style="color: #a8ffc8;">GameEnded</span>      <span style="color: #667;">{ winnerId, reason }</span></div>
+    </div>
+  </div>
+
+  <div style="flex: 1; min-width: 200px;">
+    <h3>GameState Shape</h3>
+    <div style="background: #1a1a2a; border-radius: 6px; padding: 12px; font-family: monospace; font-size: 11px; line-height: 1.9; margin-top: 8px;">
+      <div><span style="color: #ffffa8;">players</span>  <span style="color: #667;">[ health, mana, hand, deck ]</span></div>
+      <div><span style="color: #ffffa8;">board</span>    <span style="color: #667;">[ minions per side ]</span></div>
+      <div><span style="color: #ffffa8;">turn</span>     <span style="color: #667;">{ activePlayerId, number }</span></div>
+      <div><span style="color: #ffffa8;">timer</span>    <span style="color: #667;">{ secondsRemaining }</span></div>
+      <div><span style="color: #ffffa8;">phase</span>    <span style="color: #667;">WaitingForPlayers | InProgress | Ended</span></div>
+    </div>
+  </div>
+
+</div>
+
+<div class="section" style="margin-top: 16px;">
+  <h3>Reconnection Handling</h3>
+  <p style="font-size: 12px; color: #aab; line-height: 1.7;">If a player disconnects mid-game, the session is not immediately forfeited. The Game Server buffers events for a configurable window (e.g. 60s). If the player reconnects with their token within that window, they receive a full state snapshot and buffered events. If the window expires, the game is awarded to the opponent and the result is reported to the Platform API.</p>
+</div>

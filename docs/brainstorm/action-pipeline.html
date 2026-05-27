@@ -1,0 +1,157 @@
+<h2>Section 4: Action Processing Pipeline</h2>
+<p class="subtitle">Full flow from action submission to next action dequeue</p>
+
+<div style="display:grid;grid-template-columns:1fr 1fr;gap:24px;margin-top:16px">
+
+  <!-- Left: Main Pipeline -->
+  <div>
+    <h3 style="margin-bottom:12px">Main Pipeline</h3>
+    <div style="font-family:monospace;font-size:12.5px;line-height:1.7">
+
+      <div style="background:var(--surface2,#2a2a3a);border-radius:8px;padding:11px 14px;margin-bottom:6px;border-left:3px solid #60a5fa">
+        <span style="color:#93c5fd;font-weight:600">① SUBMIT ACTION</span><br>
+        <span style="color:#94a3b8">Player action arrives via WebSocket<br>System action dequeued from IActionQueue</span>
+      </div>
+      <div style="text-align:center;color:#64748b;font-size:16px;margin:2px 0">↓</div>
+
+      <div style="background:var(--surface2,#2a2a3a);border-radius:8px;padding:11px 14px;margin-bottom:6px;border-left:3px solid #f59e0b">
+        <span style="color:#fbbf24;font-weight:600">② PHASE GUARD</span><br>
+        <span style="color:#94a3b8">Reject if action is invalid in current <code style="color:#e2e8f0">GamePhase</code><br>
+        e.g. PlayCard rejected during Mulligan / PendingChoice<br>
+        SubmitChoice only valid during PendingChoice<br>
+        SubmitIntervention only valid during PendingIntervention</span>
+      </div>
+      <div style="text-align:center;color:#64748b;font-size:16px;margin:2px 0">↓</div>
+
+      <div style="background:var(--surface2,#2a2a3a);border-radius:8px;padding:11px 14px;margin-bottom:6px;border-left:3px solid #f59e0b">
+        <span style="color:#fbbf24;font-weight:600">③ ACTION VALIDATOR</span><br>
+        <span style="color:#94a3b8">Turn ownership · Mana affordability<br>
+        Target validity (alive, not stealthed)<br>
+        Taunt enforcement (must attack Taunt minions)<br>
+        Attack eligibility (canAttack, not frozen, attacks remaining)<br>
+        Board space (max 7 minions)<br>
+        → Returns error to client on failure, no state mutation</span>
+      </div>
+      <div style="text-align:center;color:#64748b;font-size:16px;margin:2px 0">↓</div>
+
+      <div style="background:var(--surface2,#2a2a3a);border-radius:8px;padding:11px 14px;margin-bottom:6px;border-left:3px solid #a78bfa">
+        <span style="color:#c4b5fd;font-weight:600">④ DISPATCH → IActionHandler</span><br>
+        <span style="color:#94a3b8">Mutates GameState · returns events[]<br>
+        One handler per action type<br>
+        All state mutation happens here</span>
+      </div>
+      <div style="text-align:center;color:#64748b;font-size:16px;margin:2px 0">↓</div>
+
+      <div style="background:var(--surface2,#2a2a3a);border-radius:8px;padding:11px 14px;margin-bottom:6px;border-left:3px solid #a78bfa">
+        <span style="color:#c4b5fd;font-weight:600">⑤ PUBLISH EVENTS → IEventBus</span><br>
+        <span style="color:#94a3b8">For each event (in return order):<br>
+        Fire subscribers: <span style="color:#60a5fa">current player L→R</span> then <span style="color:#f472b6">opponent L→R</span><br>
+        Subscribers enqueue new actions via IActionQueue</span>
+      </div>
+      <div style="text-align:center;color:#64748b;font-size:16px;margin:2px 0">↓</div>
+
+      <div style="background:var(--surface2,#2a2a3a);border-radius:8px;padding:11px 14px;margin-bottom:6px;border-left:3px solid #10b981">
+        <span style="color:#34d399;font-weight:600">⑥ AURA RECALCULATION</span><br>
+        <span style="color:#94a3b8">Run all IAura.Calculate(state)<br>
+        Update auraAttackBonus / auraHealthBonus on all minions<br>
+        Minions newly at ≤0 maxHealth marked for death</span>
+      </div>
+      <div style="text-align:center;color:#64748b;font-size:16px;margin:2px 0">↓</div>
+
+      <div style="background:var(--surface2,#2a2a3a);border-radius:8px;padding:11px 14px;margin-bottom:6px;border-left:3px solid #ef4444">
+        <span style="color:#f87171;font-weight:600">⑦ DEATH RESOLUTION (wave loop)</span><br>
+        <span style="color:#94a3b8">See previous diagram for full algorithm<br>
+        Aura recalculated after each action in Phase 2<br>
+        Loop until no deaths remain</span>
+      </div>
+      <div style="text-align:center;color:#64748b;font-size:16px;margin:2px 0">↓</div>
+
+      <div style="background:var(--surface2,#2a2a3a);border-radius:8px;padding:11px 14px;margin-bottom:6px;border-left:3px solid #ef4444">
+        <span style="color:#f87171;font-weight:600">⑧ WIN CONDITION CHECK</span><br>
+        <span style="color:#94a3b8">If any hero health ≤ 0:<br>
+        Both ≤ 0 → Draw · One ≤ 0 → other player wins<br>
+        Publish GameEndedEvent · phase = Ended</span>
+      </div>
+      <div style="text-align:center;color:#64748b;font-size:16px;margin:2px 0">↓</div>
+
+      <div style="background:var(--surface2,#2a2a3a);border-radius:8px;padding:11px 14px;border-left:3px solid #60a5fa">
+        <span style="color:#93c5fd;font-weight:600">⑨ DEQUEUE NEXT ACTION</span><br>
+        <span style="color:#94a3b8">Pull next from IActionQueue → back to ①<br>
+        If queue empty: await next player action</span>
+      </div>
+
+    </div>
+  </div>
+
+  <!-- Right: Special flows -->
+  <div style="display:flex;flex-direction:column;gap:16px">
+
+    <div>
+      <h3 style="margin-bottom:10px">Turn Lifecycle</h3>
+      <div style="background:var(--surface2,#2a2a3a);border-radius:8px;padding:14px 16px;font-size:13px">
+        <div style="color:#fbbf24;font-weight:600;margin-bottom:8px">EndTurnAction handler (active player)</div>
+        <div style="color:#94a3b8;line-height:1.8">
+          1. Freeze any minions that attacked this turn (if applicable)<br>
+          2. Publish <code style="color:#e2e8f0">TurnEndedEvent</code><br>
+          3. Fire End-of-Turn triggers (current player L→R, opponent L→R)<br>
+          4. Swap active player
+        </div>
+        <div style="color:#fbbf24;font-weight:600;margin:10px 0 8px">New turn init (system actions enqueued)</div>
+        <div style="color:#94a3b8;line-height:1.8">
+          1. Unfreeze minions frozen <em>last</em> turn<br>
+          2. Increment maxMana (cap 10), restore mana to maxMana<br>
+          3. Reset canAttack / attacksUsedThisTurn on all minions<br>
+          4. Reset heroPowerUsedThisTurn, cardsPlayedThisTurn<br>
+          5. <code style="color:#e2e8f0">DrawCardAction</code> enqueued<br>
+          6. Publish <code style="color:#e2e8f0">TurnStartedEvent</code><br>
+          7. Fire Start-of-Turn triggers (new active player L→R, opponent L→R)<br>
+          8. Start turn timer
+        </div>
+      </div>
+    </div>
+
+    <div>
+      <h3 style="margin-bottom:10px">PendingChoice Interruption</h3>
+      <div style="background:var(--surface2,#2a2a3a);border-radius:8px;padding:14px 16px;font-size:13px;color:#94a3b8;line-height:1.8">
+        When an effect calls <code style="color:#e2e8f0">StartChoiceAction</code>:<br>
+        • Phase → <code style="color:#e2e8f0">PendingChoice</code><br>
+        • Remaining effect actions stored as <em>continuation</em> in <code style="color:#e2e8f0">PendingChoice.context</code><br>
+        • Pipeline pauses — no further actions processed until choice resolves<br>
+        • <code style="color:#e2e8f0">SubmitChoiceAction</code> arrives → fill in selected target/option<br>
+        • Continuation actions re-enqueued → Phase → <code style="color:#e2e8f0">InProgress</code>
+      </div>
+    </div>
+
+    <div>
+      <h3 style="margin-bottom:10px">PendingIntervention Interruption</h3>
+      <div style="background:var(--surface2,#2a2a3a);border-radius:8px;padding:14px 16px;font-size:13px;color:#94a3b8;line-height:1.8">
+        When engine emits <code style="color:#e2e8f0">StartInterventionAction</code>:<br>
+        • Phase → <code style="color:#e2e8f0">PendingIntervention</code><br>
+        • <code style="color:#e2e8f0">heldAction</code> stored in state — not yet processed<br>
+        • Timer starts (timeoutSeconds)<br>
+        • Only <code style="color:#e2e8f0">SubmitInterventionAction</code> accepted from responding player<br>
+        • On response or timeout:<br>
+        &nbsp;&nbsp;– Card played: process intervention card first, then heldAction<br>
+        &nbsp;&nbsp;– Skip/timeout: process heldAction directly<br>
+        • Phase → <code style="color:#e2e8f0">InProgress</code>
+      </div>
+    </div>
+
+    <div>
+      <h3 style="margin-bottom:10px">Aura Recalculation Triggers</h3>
+      <div style="background:var(--surface2,#2a2a3a);border-radius:8px;padding:14px 16px;font-size:13px">
+        <div style="color:#34d399;margin-bottom:6px">Recalculated after any action that changes:</div>
+        <div style="color:#94a3b8;line-height:1.8">
+          • Board composition (summon, death, bounce, transform)<br>
+          • Minion stats (buff, silence)<br>
+          • Keywords added/removed<br>
+          • After each Phase 2 deathrattle action<br>
+          • After Phase 3 reborn summons
+        </div>
+        <div style="color:#fbbf24;margin:8px 0 4px;font-size:12px">Key invariant</div>
+        <div style="color:#94a3b8;font-size:12px">Aura bonuses are never in enchantments. They are zeroed and fully rewritten on every recalculation. A minion reaching ≤0 maxHealth from aura loss is treated identically to damage death.</div>
+      </div>
+    </div>
+
+  </div>
+</div>

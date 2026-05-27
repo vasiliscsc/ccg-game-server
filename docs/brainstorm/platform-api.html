@@ -1,0 +1,115 @@
+<h2>Platform API Design</h2>
+<p class="subtitle">TypeScript / Node.js — three internal modules, one deployable service</p>
+
+<div class="mockup">
+  <div class="mockup-header">Internal Module Structure</div>
+  <div class="mockup-body" style="padding: 20px; font-size: 12px;">
+
+    <div style="display: flex; gap: 12px; flex-wrap: wrap; justify-content: center;">
+
+      <!-- Auth Module -->
+      <div style="background: #1a1525; border: 2px solid #8855cc; border-radius: 8px; padding: 14px; min-width: 180px; flex: 1;">
+        <div style="color: #cc99ff; font-weight: bold; font-size: 13px; text-align: center;">Auth Module</div>
+        <div style="font-size: 10px; color: #667; text-align: center; margin-top: 2px;">spec 2</div>
+        <div style="margin-top: 10px; font-size: 11px; color: #aab; line-height: 1.9; font-family: monospace;">
+          <div>POST /auth/register</div>
+          <div>POST /auth/login</div>
+          <div>POST /auth/refresh</div>
+          <div>POST /auth/logout</div>
+        </div>
+        <div style="margin-top: 10px; font-size: 11px; color: #889; line-height: 1.6;">
+          <div>Issues short-lived JWT access tokens</div>
+          <div>Refresh tokens stored in DB</div>
+          <div>Passwords hashed with bcrypt</div>
+        </div>
+      </div>
+
+      <!-- Collection Module -->
+      <div style="background: #15151a; border: 2px solid #5566aa; border-radius: 8px; padding: 14px; min-width: 180px; flex: 1;">
+        <div style="color: #99aaff; font-weight: bold; font-size: 13px; text-align: center;">Collection Module</div>
+        <div style="font-size: 10px; color: #667; text-align: center; margin-top: 2px;">spec 3</div>
+        <div style="margin-top: 10px; font-size: 11px; color: #aab; line-height: 1.9; font-family: monospace;">
+          <div>GET  /cards</div>
+          <div>GET  /collection</div>
+          <div>GET  /decks</div>
+          <div>POST /decks</div>
+          <div>PUT  /decks/:id</div>
+          <div>DEL  /decks/:id</div>
+        </div>
+        <div style="margin-top: 10px; font-size: 11px; color: #889; line-height: 1.6;">
+          <div>Card catalog is server-defined</div>
+          <div>Players own card copies</div>
+          <div>Deck validation on save</div>
+        </div>
+      </div>
+
+      <!-- Matchmaking Module -->
+      <div style="background: #151a15; border: 2px solid #55aa66; border-radius: 8px; padding: 14px; min-width: 180px; flex: 1;">
+        <div style="color: #99ffaa; font-weight: bold; font-size: 13px; text-align: center;">Matchmaking Module</div>
+        <div style="font-size: 10px; color: #667; text-align: center; margin-top: 2px;">spec 4</div>
+        <div style="margin-top: 10px; font-size: 11px; color: #aab; line-height: 1.9; font-family: monospace;">
+          <div>POST /queue/join</div>
+          <div>POST /queue/leave</div>
+          <div>GET  /queue/status</div>
+          <div style="color: #556;">─────────────────</div>
+          <div style="color: #667;">internal only:</div>
+          <div>POST /session/result</div>
+        </div>
+        <div style="margin-top: 10px; font-size: 11px; color: #889; line-height: 1.6;">
+          <div>MMR-range based matching</div>
+          <div>Expands range over wait time</div>
+          <div>Updates MMR on game end</div>
+        </div>
+      </div>
+
+    </div>
+
+    <!-- Shared infrastructure note -->
+    <div style="margin-top: 16px; background: #1a1a1a; border: 1px dashed #445; border-radius: 6px; padding: 12px; text-align: center; font-size: 11px; color: #778;">
+      <span style="color: #aaa; font-weight: bold;">Shared across all modules:</span>
+      &nbsp; JWT middleware (auth guard) &nbsp;·&nbsp; Request validation &nbsp;·&nbsp; Error handler &nbsp;·&nbsp; Logger &nbsp;·&nbsp; DB connection pool (PostgreSQL) &nbsp;·&nbsp; Redis client
+    </div>
+
+  </div>
+</div>
+
+<div style="display: flex; gap: 16px; flex-wrap: wrap; margin-top: 16px;">
+
+  <div style="flex: 1; min-width: 220px;">
+    <h3>MMR System</h3>
+    <div style="background: #151a15; border: 1px solid #55aa66; border-radius: 6px; padding: 12px; font-size: 11px; color: #aab; line-height: 1.8; margin-top: 8px;">
+      <div><span style="color: #99ffaa; font-weight: bold;">Algorithm:</span> Elo (starting point)</div>
+      <div>Initial MMR: 1000</div>
+      <div>K-factor: 32 (adjustable per rank band)</div>
+      <div style="margin-top: 6px;"><span style="color: #99ffaa; font-weight: bold;">Queue matching:</span></div>
+      <div>±50 MMR at queue start</div>
+      <div>Range expands +25 every 30s</div>
+      <div>Caps at ±300 before any opponent accepted</div>
+    </div>
+  </div>
+
+  <div style="flex: 1; min-width: 220px;">
+    <h3>Deck Validation Rules</h3>
+    <div style="background: #15151a; border: 1px solid #5566aa; border-radius: 6px; padding: 12px; font-size: 11px; color: #aab; line-height: 1.8; margin-top: 8px;">
+      <div>Exactly 30 cards per deck</div>
+      <div>Max 2 copies of any non-legendary</div>
+      <div>Max 1 copy of any legendary</div>
+      <div>All cards must be owned by the player</div>
+      <div>Deck is validated on save and again at queue join</div>
+      <div style="color: #667; font-size: 10px; margin-top: 4px;">(re-validation at queue join catches cards removed from collection since last save)</div>
+    </div>
+  </div>
+
+  <div style="flex: 1; min-width: 220px;">
+    <h3>Session Handoff</h3>
+    <div style="background: #1a1a15; border: 1px solid #aaaa55; border-radius: 6px; padding: 12px; font-size: 11px; color: #aab; line-height: 1.8; margin-top: 8px;">
+      <div>On match found, Platform API calls Game Server:</div>
+      <div style="font-family: monospace; color: #ffffa8; margin-top: 4px; font-size: 10px;">POST /internal/session/create</div>
+      <div style="font-family: monospace; color: #667; font-size: 10px;">{ p1: { id, mmr, deckList },</div>
+      <div style="font-family: monospace; color: #667; font-size: 10px;">&nbsp; p2: { id, mmr, deckList } }</div>
+      <div style="margin-top: 6px;">Platform API stores { sessionId, ws_url } in Redis</div>
+      <div>Pushes connection info to both clients via queue/status polling or SSE</div>
+    </div>
+  </div>
+
+</div>

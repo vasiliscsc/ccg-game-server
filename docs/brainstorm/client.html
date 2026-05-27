@@ -1,0 +1,116 @@
+<h2>Client Design</h2>
+<p class="subtitle">Unity or Godot — a pure event renderer with two server connections</p>
+
+<div class="mockup">
+  <div class="mockup-header">Screen State Machine</div>
+  <div class="mockup-body" style="padding: 20px; font-size: 12px; font-family: monospace;">
+
+    <div style="display: flex; align-items: center; justify-content: center; gap: 0; flex-wrap: wrap;">
+
+      <div style="background: #1a2535; border: 2px solid #4a7abf; border-radius: 8px; padding: 10px 16px; text-align: center; min-width: 110px;">
+        <div style="color: #a8c8ff; font-weight: bold;">Login</div>
+        <div style="font-size: 10px; color: #667; margin-top: 2px;">register / sign in</div>
+      </div>
+
+      <div style="color: #445; padding: 0 6px; font-size: 18px;">→</div>
+
+      <div style="background: #1a2535; border: 2px solid #4a7abf; border-radius: 8px; padding: 10px 16px; text-align: center; min-width: 110px;">
+        <div style="color: #a8c8ff; font-weight: bold;">Main Menu</div>
+        <div style="font-size: 10px; color: #667; margin-top: 2px;">play / collection / settings</div>
+      </div>
+
+      <div style="display: flex; flex-direction: column; align-items: center; gap: 4px; padding: 0 6px;">
+        <div style="display: flex; align-items: center;">
+          <div style="color: #445; font-size: 18px;">→</div>
+          <div style="background: #15151a; border: 2px solid #5566aa; border-radius: 8px; padding: 10px 16px; text-align: center; min-width: 130px;">
+            <div style="color: #99aaff; font-weight: bold;">Collection</div>
+            <div style="font-size: 10px; color: #667; margin-top: 2px;">browse cards, build decks</div>
+          </div>
+        </div>
+        <div style="height: 10px; border-left: 1px dashed #334; margin-left: 50px;"></div>
+      </div>
+
+      <div style="color: #445; padding: 0 6px; font-size: 18px;">→</div>
+
+      <div style="background: #151a15; border: 2px solid #55aa66; border-radius: 8px; padding: 10px 16px; text-align: center; min-width: 120px;">
+        <div style="color: #99ffaa; font-weight: bold;">Queue</div>
+        <div style="font-size: 10px; color: #667; margin-top: 2px;">select deck, searching...</div>
+      </div>
+
+      <div style="color: #445; padding: 0 6px; font-size: 18px;">→</div>
+
+      <div style="background: #152015; border: 2px solid #77cc55; border-radius: 8px; padding: 10px 16px; text-align: center; min-width: 110px;">
+        <div style="color: #bbffaa; font-weight: bold;">Game Board</div>
+        <div style="font-size: 10px; color: #667; margin-top: 2px;">live match</div>
+      </div>
+
+      <div style="color: #445; padding: 0 6px; font-size: 18px;">→</div>
+
+      <div style="background: #1a2535; border: 2px solid #4a7abf; border-radius: 8px; padding: 10px 16px; text-align: center; min-width: 110px;">
+        <div style="color: #a8c8ff; font-weight: bold;">Post-Game</div>
+        <div style="font-size: 10px; color: #667; margin-top: 2px;">result, MMR delta</div>
+      </div>
+
+    </div>
+
+    <div style="text-align: center; margin-top: 10px; font-size: 10px; color: #556;">
+      Post-Game → Main Menu &nbsp;|&nbsp; any screen → Login (on token expiry or logout)
+    </div>
+
+  </div>
+</div>
+
+<div class="mockup" style="margin-top: 16px;">
+  <div class="mockup-header">Connection Architecture</div>
+  <div class="mockup-body" style="padding: 16px; font-size: 11px;">
+    <div style="display: flex; gap: 16px; flex-wrap: wrap;">
+
+      <div style="flex: 1; min-width: 200px; background: #1a1525; border: 1px solid #7755aa; border-radius: 6px; padding: 12px;">
+        <div style="color: #cc99ff; font-weight: bold; margin-bottom: 8px;">REST Connection (Platform API)</div>
+        <div style="color: #aab; line-height: 1.8;">
+          <div>Active during: Login → Queue</div>
+          <div>Stateless HTTP with JWT header</div>
+          <div>Auth, collection, deck CRUD</div>
+          <div>Queue join / leave / status polling</div>
+          <div style="margin-top: 6px; color: #667; font-size: 10px;">Polling interval: every 2–3s while in queue<br>to check for match found notification</div>
+        </div>
+      </div>
+
+      <div style="flex: 1; min-width: 200px; background: #152015; border: 1px solid #55aa66; border-radius: 6px; padding: 12px;">
+        <div style="color: #99ffaa; font-weight: bold; margin-bottom: 8px;">WebSocket Connection (Game Server)</div>
+        <div style="color: #aab; line-height: 1.8;">
+          <div>Active during: Game Board only</div>
+          <div>Authenticated with player token from Platform API</div>
+          <div>Sends: action messages only</div>
+          <div>Receives: game events stream</div>
+          <div style="margin-top: 6px; color: #667; font-size: 10px;">On disconnect: auto-reconnect with same token<br>within the 60s grace window</div>
+        </div>
+      </div>
+
+    </div>
+  </div>
+</div>
+
+<div class="mockup" style="margin-top: 16px;">
+  <div class="mockup-header">Event Handling Pattern</div>
+  <div class="mockup-body" style="padding: 16px; font-family: monospace; font-size: 11px; line-height: 1.9;">
+    <div style="color: #667; margin-bottom: 6px;">// Client maintains a local GameState built entirely from server events</div>
+    <div><span style="color: #a8ffc8;">onEvent</span>(event) <span style="color: #889;">{</span></div>
+    <div style="padding-left: 20px;">
+      <div><span style="color: #ffaa88;">switch</span> (event.type) <span style="color: #889;">{</span></div>
+      <div style="padding-left: 20px;">
+        <div><span style="color: #a8c8ff;">CardDrawn</span>     → update hand display, animate draw</div>
+        <div><span style="color: #a8c8ff;">CardPlayed</span>    → remove from hand, trigger card animation</div>
+        <div><span style="color: #a8c8ff;">MinionSummoned</span>→ place minion on board</div>
+        <div><span style="color: #a8c8ff;">DamageDealt</span>   → show damage number, update health bar</div>
+        <div><span style="color: #a8c8ff;">MinionDied</span>    → play death animation, remove from board</div>
+        <div><span style="color: #a8c8ff;">TurnStarted</span>   → highlight active player, start timer</div>
+        <div><span style="color: #a8c8ff;">GameEnded</span>     → show result overlay, transition to Post-Game</div>
+      </div>
+      <div><span style="color: #889;">}</span></div>
+    </div>
+    <div><span style="color: #889;">}</span></div>
+    <div style="margin-top: 8px; color: #667;">// Client NEVER mutates game state speculatively — always waits for server event</div>
+    <div style="color: #667;">// This keeps client logic simple: it is a view over an event stream, nothing more</div>
+  </div>
+</div>

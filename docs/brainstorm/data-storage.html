@@ -1,0 +1,125 @@
+<h2>Data Storage</h2>
+<p class="subtitle">PostgreSQL for persistence — Redis for ephemeral runtime state</p>
+
+<div class="mockup">
+  <div class="mockup-header">PostgreSQL — Core Schema</div>
+  <div class="mockup-body" style="padding: 20px; font-size: 11px; font-family: monospace;">
+
+    <div style="display: flex; gap: 16px; flex-wrap: wrap;">
+
+      <!-- Auth tables -->
+      <div style="flex: 1; min-width: 190px;">
+        <div style="color: #cc99ff; font-weight: bold; margin-bottom: 8px; font-size: 12px;">Auth</div>
+
+        <div style="background: #1a1525; border: 1px solid #7755aa; border-radius: 6px; padding: 10px; margin-bottom: 10px;">
+          <div style="color: #cc99ff; font-weight: bold; margin-bottom: 6px;">players</div>
+          <div style="color: #ffffa8;">id</div>           <span style="color: #667;">uuid PK</span><br>
+          <div style="color: #aab;">username</div>      <span style="color: #667;">text unique</span><br>
+          <div style="color: #aab;">email</div>         <span style="color: #667;">text unique</span><br>
+          <div style="color: #aab;">password_hash</div> <span style="color: #667;">text</span><br>
+          <div style="color: #aab;">created_at</div>    <span style="color: #667;">timestamptz</span>
+        </div>
+
+        <div style="background: #1a1525; border: 1px solid #7755aa; border-radius: 6px; padding: 10px;">
+          <div style="color: #cc99ff; font-weight: bold; margin-bottom: 6px;">refresh_tokens</div>
+          <div style="color: #ffffa8;">id</div>           <span style="color: #667;">uuid PK</span><br>
+          <div style="color: #aab;">player_id</div>     <span style="color: #667;">uuid FK→players</span><br>
+          <div style="color: #aab;">token_hash</div>    <span style="color: #667;">text</span><br>
+          <div style="color: #aab;">expires_at</div>    <span style="color: #667;">timestamptz</span><br>
+          <div style="color: #aab;">revoked</div>       <span style="color: #667;">boolean</span>
+        </div>
+      </div>
+
+      <!-- Collection tables -->
+      <div style="flex: 1; min-width: 190px;">
+        <div style="color: #99aaff; font-weight: bold; margin-bottom: 8px; font-size: 12px;">Collection</div>
+
+        <div style="background: #15151a; border: 1px solid #5566aa; border-radius: 6px; padding: 10px; margin-bottom: 10px;">
+          <div style="color: #99aaff; font-weight: bold; margin-bottom: 6px;">cards</div>
+          <div style="color: #ffffa8;">id</div>           <span style="color: #667;">uuid PK</span><br>
+          <div style="color: #aab;">name</div>          <span style="color: #667;">text</span><br>
+          <div style="color: #aab;">mana_cost</div>     <span style="color: #667;">int</span><br>
+          <div style="color: #aab;">type</div>          <span style="color: #667;">enum (minion, spell)</span><br>
+          <div style="color: #aab;">rarity</div>        <span style="color: #667;">enum (common…legendary)</span><br>
+          <div style="color: #aab;">definition</div>    <span style="color: #667;">jsonb</span>
+          <div style="color: #556; font-size: 10px; margin-top: 4px;">jsonb holds stats, effects, targeting rules — flexible for card design</div>
+        </div>
+
+        <div style="background: #15151a; border: 1px solid #5566aa; border-radius: 6px; padding: 10px; margin-bottom: 10px;">
+          <div style="color: #99aaff; font-weight: bold; margin-bottom: 6px;">player_cards</div>
+          <div style="color: #aab;">player_id</div>     <span style="color: #667;">uuid FK→players</span><br>
+          <div style="color: #aab;">card_id</div>       <span style="color: #667;">uuid FK→cards</span><br>
+          <div style="color: #aab;">quantity</div>      <span style="color: #667;">int</span><br>
+          <div style="color: #667; font-size: 10px;">PK: (player_id, card_id)</div>
+        </div>
+
+        <div style="background: #15151a; border: 1px solid #5566aa; border-radius: 6px; padding: 10px;">
+          <div style="color: #99aaff; font-weight: bold; margin-bottom: 6px;">decks</div>
+          <div style="color: #ffffa8;">id</div>           <span style="color: #667;">uuid PK</span><br>
+          <div style="color: #aab;">player_id</div>     <span style="color: #667;">uuid FK→players</span><br>
+          <div style="color: #aab;">name</div>          <span style="color: #667;">text</span><br>
+          <div style="color: #aab;">card_list</div>     <span style="color: #667;">jsonb</span>
+          <div style="color: #556; font-size: 10px; margin-top: 4px;">jsonb: [{ card_id, quantity }] — validated on save</div>
+        </div>
+      </div>
+
+      <!-- Matchmaking / history tables -->
+      <div style="flex: 1; min-width: 190px;">
+        <div style="color: #99ffaa; font-weight: bold; margin-bottom: 8px; font-size: 12px;">Matchmaking &amp; History</div>
+
+        <div style="background: #151a15; border: 1px solid #55aa66; border-radius: 6px; padding: 10px; margin-bottom: 10px;">
+          <div style="color: #99ffaa; font-weight: bold; margin-bottom: 6px;">player_mmr</div>
+          <div style="color: #ffffa8;">player_id</div>   <span style="color: #667;">uuid PK FK→players</span><br>
+          <div style="color: #aab;">mmr</div>            <span style="color: #667;">int default 1000</span><br>
+          <div style="color: #aab;">wins</div>           <span style="color: #667;">int default 0</span><br>
+          <div style="color: #aab;">losses</div>         <span style="color: #667;">int default 0</span><br>
+          <div style="color: #aab;">updated_at</div>    <span style="color: #667;">timestamptz</span>
+        </div>
+
+        <div style="background: #151a15; border: 1px solid #55aa66; border-radius: 6px; padding: 10px;">
+          <div style="color: #99ffaa; font-weight: bold; margin-bottom: 6px;">matches</div>
+          <div style="color: #ffffa8;">id</div>           <span style="color: #667;">uuid PK</span><br>
+          <div style="color: #aab;">session_id</div>    <span style="color: #667;">uuid</span><br>
+          <div style="color: #aab;">player1_id</div>    <span style="color: #667;">uuid FK→players</span><br>
+          <div style="color: #aab;">player2_id</div>    <span style="color: #667;">uuid FK→players</span><br>
+          <div style="color: #aab;">winner_id</div>     <span style="color: #667;">uuid FK→players</span><br>
+          <div style="color: #aab;">p1_mmr_before</div> <span style="color: #667;">int</span><br>
+          <div style="color: #aab;">p2_mmr_before</div> <span style="color: #667;">int</span><br>
+          <div style="color: #aab;">p1_mmr_after</div>  <span style="color: #667;">int</span><br>
+          <div style="color: #aab;">p2_mmr_after</div>  <span style="color: #667;">int</span><br>
+          <div style="color: #aab;">ended_at</div>      <span style="color: #667;">timestamptz</span>
+        </div>
+      </div>
+
+    </div>
+  </div>
+</div>
+
+<div class="mockup" style="margin-top: 16px;">
+  <div class="mockup-header">Redis — Ephemeral Keys</div>
+  <div class="mockup-body" style="padding: 16px; font-family: monospace; font-size: 11px; line-height: 2;">
+
+    <div style="display: flex; gap: 16px; flex-wrap: wrap;">
+      <div style="flex: 1; min-width: 200px;">
+        <div style="color: #ffa8a8; font-weight: bold; margin-bottom: 6px;">Matchmaking Queue</div>
+        <div style="color: #aab;">queue:ranked</div>
+        <div style="color: #667; font-size: 10px; margin-bottom: 8px;">Sorted set — score = MMR<br>value = player_id<br>TTL auto-removed on leave/match</div>
+
+        <div style="color: #ffa8a8; font-weight: bold; margin-bottom: 6px;">Queue Metadata</div>
+        <div style="color: #aab;">queue:meta:{player_id}</div>
+        <div style="color: #667; font-size: 10px;">{ deck_id, queued_at }<br>TTL: 10 minutes</div>
+      </div>
+
+      <div style="flex: 1; min-width: 200px;">
+        <div style="color: #ffa8a8; font-weight: bold; margin-bottom: 6px;">Active Sessions</div>
+        <div style="color: #aab;">session:{session_id}</div>
+        <div style="color: #667; font-size: 10px; margin-bottom: 8px;">{ ws_url, p1_id, p2_id, status }<br>TTL: 4 hours (max game duration)</div>
+
+        <div style="color: #ffa8a8; font-weight: bold; margin-bottom: 6px;">Player → Session Lookup</div>
+        <div style="color: #aab;">player:session:{player_id}</div>
+        <div style="color: #667; font-size: 10px;">session_id<br>Used to detect already-in-game on queue join<br>TTL: matches session TTL</div>
+      </div>
+    </div>
+
+  </div>
+</div>

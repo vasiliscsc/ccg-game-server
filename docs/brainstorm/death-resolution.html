@@ -1,0 +1,112 @@
+<h2>Death Resolution & Action Ordering</h2>
+<p class="subtitle">Where deterministic ordering is enforced in the engine</p>
+
+<div style="display:grid;grid-template-columns:1fr 1fr;gap:24px;margin-top:16px">
+
+  <!-- Left: Death Wave Algorithm -->
+  <div>
+    <h3 style="margin-bottom:12px">Death Wave Algorithm</h3>
+    <div style="font-family:monospace;font-size:13px;line-height:1.7">
+
+      <div style="background:var(--surface2,#2a2a3a);border-radius:8px;padding:12px 16px;margin-bottom:8px;border-left:3px solid #7c6af7">
+        <span style="color:#a78bfa;font-weight:600">ACTION COMPLETES</span><br>
+        <span style="color:#94a3b8">Handler mutates state, returns events</span>
+      </div>
+
+      <div style="text-align:center;color:#64748b;font-size:18px;margin:4px 0">↓</div>
+
+      <div style="background:var(--surface2,#2a2a3a);border-radius:8px;padding:12px 16px;margin-bottom:8px;border-left:3px solid #7c6af7">
+        <span style="color:#a78bfa;font-weight:600">PUBLISH EVENTS</span><br>
+        <span style="color:#94a3b8">IEventBus fires subscribers in order<br>
+        <span style="color:#60a5fa">① current player L→R</span>&nbsp;&nbsp;<span style="color:#f472b6">② opponent L→R</span></span>
+      </div>
+
+      <div style="text-align:center;color:#64748b;font-size:18px;margin:4px 0">↓</div>
+
+      <div style="background:var(--surface2,#2a2a3a);border-radius:8px;padding:12px 16px;margin-bottom:8px;border-left:3px solid #f59e0b">
+        <span style="color:#fbbf24;font-weight:600">DEATH CHECK</span><br>
+        <span style="color:#94a3b8">Collect all minions with currentHealth ≤ 0</span><br>
+        <span style="color:#94a3b8">Sort: <span style="color:#60a5fa">current[0..n]</span> → <span style="color:#f472b6">opponent[0..n]</span> → neutral[0..n]</span>
+      </div>
+
+      <div style="display:flex;align-items:center;gap:8px;margin:4px 0">
+        <div style="flex:1;text-align:center;color:#64748b;font-size:18px">↓ deaths found</div>
+        <div style="color:#64748b;font-size:13px;padding:4px 8px;border:1px solid #374151;border-radius:4px">none → next action</div>
+      </div>
+
+      <div style="background:var(--surface2,#2a2a3a);border-radius:8px;padding:12px 16px;margin-bottom:8px;border-left:3px solid #ef4444">
+        <span style="color:#f87171;font-weight:600">PHASE 1 — REMOVE &amp; GRIEVE</span><br>
+        <span style="color:#94a3b8">For each dead minion (in sort order):<br>
+        remove from board, add GraveyardEntry,<br>publish <code style="color:#e2e8f0">MinionDiedEvent</code></span>
+      </div>
+
+      <div style="text-align:center;color:#64748b;font-size:18px;margin:4px 0">↓</div>
+
+      <div style="background:var(--surface2,#2a2a3a);border-radius:8px;padding:12px 16px;margin-bottom:8px;border-left:3px solid #ef4444">
+        <span style="color:#f87171;font-weight:600">PHASE 2 — DEATHRATTLES</span><br>
+        <span style="color:#94a3b8">For each dead minion (same sort order):<br>
+        enqueue deathrattle actions → process fully<br>
+        <span style="color:#fbbf24">New deaths here → queued for next wave</span></span>
+      </div>
+
+      <div style="text-align:center;color:#64748b;font-size:18px;margin:4px 0">↓</div>
+
+      <div style="background:var(--surface2,#2a2a3a);border-radius:8px;padding:12px 16px;margin-bottom:8px;border-left:3px solid #ef4444">
+        <span style="color:#f87171;font-weight:600">PHASE 3 — REBORNS</span><br>
+        <span style="color:#94a3b8">For each dead minion with Reborn (same sort order):<br>
+        enqueue <code style="color:#e2e8f0">SummonMinionAction</code> at 1 HP<br>
+        Always after ALL deathrattles of this wave</span>
+      </div>
+
+      <div style="text-align:center;color:#64748b;font-size:18px;margin:4px 0">↓</div>
+
+      <div style="background:var(--surface2,#2a2a3a);border-radius:8px;padding:12px 16px;border-left:3px solid #10b981">
+        <span style="color:#34d399;font-weight:600">LOOP — next wave</span><br>
+        <span style="color:#94a3b8">Run Death Check again<br>
+        Repeat until no deaths remain<br>
+        Then: win condition check</span>
+      </div>
+
+    </div>
+  </div>
+
+  <!-- Right: Where Ordering Lives -->
+  <div>
+    <h3 style="margin-bottom:12px">Where Each Ordering Is Enforced</h3>
+
+    <div style="display:flex;flex-direction:column;gap:12px">
+
+      <div style="background:var(--surface2,#2a2a3a);border-radius:8px;padding:14px 16px">
+        <div style="color:#a78bfa;font-weight:600;margin-bottom:6px">IEventBus — trigger fire order</div>
+        <div style="color:#94a3b8;font-size:13px">Maintains two subscriber lists per event type: current player (sorted by board index) and opponent (sorted by board index). Always fires current player's list first. Minions register on summon — position order is preserved naturally.</div>
+      </div>
+
+      <div style="background:var(--surface2,#2a2a3a);border-radius:8px;padding:14px 16px">
+        <div style="color:#fbbf24;font-weight:600;margin-bottom:6px">DeathResolutionService — death wave order</div>
+        <div style="color:#94a3b8;font-size:13px">Owns the 3-phase wave algorithm. Sorts pending deaths by (player = current/opponent, boardIndex). Enforces: Deathrattles complete before any Reborn summons. New deaths during Phase 2 are deferred to next wave — not processed mid-wave.</div>
+      </div>
+
+      <div style="background:var(--surface2,#2a2a3a);border-radius:8px;padding:14px 16px">
+        <div style="color:#60a5fa;font-weight:600;margin-bottom:6px">IActionQueue — processing order</div>
+        <div style="color:#94a3b8;font-size:13px">FIFO queue. <code style="color:#e2e8f0">Enqueue</code> for normal effects. <code style="color:#e2e8f0">EnqueueFront</code> reserved for death resolution inserting immediate system actions. Ensures effects enqueued by deathrattles are processed before the next player action.</div>
+      </div>
+
+      <div style="background:var(--surface2,#2a2a3a);border-radius:8px;padding:14px 16px">
+        <div style="color:#f472b6;font-weight:600;margin-bottom:6px">GameEngine main loop — isolation</div>
+        <div style="color:#94a3b8;font-size:13px">Processes one action at a time. Does not start the next action until: current action's handler completes → events published → death check runs to stability. No parallel processing.</div>
+      </div>
+
+      <div style="background:var(--surface2,#2a2a3a);border-radius:8px;padding:14px 16px">
+        <div style="color:#34d399;font-weight:600;margin-bottom:6px">ICardHandler.OnDeath — per-minion ordering</div>
+        <div style="color:#94a3b8;font-size:13px">Called by DeathResolutionService in sort order. Responsible for enqueuing this minion's deathrattle actions. <em>Does not</em> enqueue Reborn — that is always handled by DeathResolutionService in Phase 3.</div>
+      </div>
+
+    </div>
+
+    <div style="margin-top:16px;background:var(--surface2,#2a2a3a);border-radius:8px;padding:14px 16px;border:1px solid #374151">
+      <div style="color:#e2e8f0;font-weight:600;margin-bottom:6px;font-size:13px">Key invariant</div>
+      <div style="color:#94a3b8;font-size:13px">A minion's Reborn summon can never happen before its own Deathrattle resolves, and neither can happen before the minion is fully removed from the board. This is enforced by DeathResolutionService phasing, not by individual ICardHandler implementations.</div>
+    </div>
+
+  </div>
+</div>

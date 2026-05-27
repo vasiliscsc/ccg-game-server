@@ -1,0 +1,149 @@
+<h2>System Overview</h2>
+<p class="subtitle">Five subsystems, two servers, one client — built in dependency order</p>
+
+<div class="mockup">
+  <div class="mockup-header">Architecture Map</div>
+  <div class="mockup-body" style="font-family: monospace; font-size: 13px; line-height: 1.8; padding: 24px;">
+
+    <div style="display: flex; gap: 40px; align-items: flex-start; justify-content: center; flex-wrap: wrap;">
+
+      <!-- Client -->
+      <div style="text-align: center;">
+        <div style="background: #2d4a7a; border: 2px solid #4a7abf; border-radius: 8px; padding: 16px 24px; min-width: 160px;">
+          <div style="font-weight: bold; font-size: 15px; color: #a8c8ff;">CLIENT</div>
+          <div style="font-size: 11px; color: #8899aa; margin-top: 4px;">Unity / Godot</div>
+          <div style="margin-top: 10px; font-size: 11px; color: #ccd; line-height: 1.6;">
+            <div>Game rendering</div>
+            <div>Player input</div>
+            <div>Event display</div>
+          </div>
+        </div>
+        <div style="margin-top: 8px; font-size: 11px; color: #667788;">Build order: 5th</div>
+      </div>
+
+      <!-- Arrows -->
+      <div style="display: flex; flex-direction: column; align-items: center; justify-content: center; gap: 12px; padding-top: 10px;">
+        <div style="font-size: 11px; color: #88aacc; text-align: center;">
+          <div style="color: #55aaff;">REST / HTTP</div>
+          <div style="font-size: 18px;">⟷</div>
+          <div style="color: #aa88cc;">(auth, decks,</div>
+          <div style="color: #aa88cc;">matchmaking)</div>
+        </div>
+        <div style="border-left: 1px dashed #445; height: 20px;"></div>
+        <div style="font-size: 11px; color: #88aacc; text-align: center;">
+          <div style="color: #55ccaa;">WebSocket</div>
+          <div style="font-size: 18px;">⟷</div>
+          <div style="color: #55ccaa;">(live game</div>
+          <div style="color: #55ccaa;">events)</div>
+        </div>
+      </div>
+
+      <!-- Servers -->
+      <div style="display: flex; flex-direction: column; gap: 24px;">
+
+        <!-- Platform API -->
+        <div style="text-align: center;">
+          <div style="background: #3a2d5a; border: 2px solid #7a5abf; border-radius: 8px; padding: 16px 24px; min-width: 200px;">
+            <div style="font-weight: bold; font-size: 15px; color: #c8a8ff;">PLATFORM API</div>
+            <div style="font-size: 11px; color: #8899aa; margin-top: 4px;">TypeScript / Node.js</div>
+            <div style="margin-top: 10px; font-size: 11px; color: #ccd; line-height: 1.6;">
+              <div>Auth &amp; accounts</div>
+              <div>Card collection</div>
+              <div>Deck management</div>
+              <div>Matchmaking queue</div>
+              <div>MMR calculation</div>
+            </div>
+          </div>
+          <div style="margin-top: 8px; font-size: 11px; color: #667788;">Build order: 2nd–4th</div>
+        </div>
+
+        <!-- Internal link -->
+        <div style="text-align: center; font-size: 11px; color: #556677;">
+          <div>internal HTTP</div>
+          <div>(session create,</div>
+          <div>result report)</div>
+          <div style="font-size: 16px;">↕</div>
+        </div>
+
+        <!-- Game Server -->
+        <div style="text-align: center;">
+          <div style="background: #2d5a3a; border: 2px solid #5abf7a; border-radius: 8px; padding: 16px 24px; min-width: 200px;">
+            <div style="font-weight: bold; font-size: 15px; color: #a8ffC8;">GAME SERVER</div>
+            <div style="font-size: 11px; color: #8899aa; margin-top: 4px;">C# / .NET</div>
+            <div style="margin-top: 10px; font-size: 11px; color: #ccd; line-height: 1.6;">
+              <div>WebSocket connections</div>
+              <div>Authoritative game state</div>
+              <div>Action validation</div>
+              <div>Event broadcasting</div>
+              <div>Spectator support</div>
+            </div>
+          </div>
+          <div style="margin-top: 8px; font-size: 11px; color: #667788;">Build order: 1st</div>
+        </div>
+
+      </div>
+
+      <!-- Arrow to DB -->
+      <div style="display: flex; flex-direction: column; align-items: center; justify-content: center; padding-top: 10px;">
+        <div style="font-size: 11px; color: #88aacc; text-align: center;">
+          <div style="font-size: 18px;">⟷</div>
+        </div>
+      </div>
+
+      <!-- Storage -->
+      <div style="display: flex; flex-direction: column; gap: 16px; justify-content: center;">
+        <div style="background: #3a3a2a; border: 2px solid #aaaa55; border-radius: 8px; padding: 12px 20px; min-width: 150px; text-align: center;">
+          <div style="font-weight: bold; color: #ffffa8; font-size: 14px;">PostgreSQL</div>
+          <div style="font-size: 11px; color: #ccd; margin-top: 6px; line-height: 1.6;">
+            <div>Players &amp; accounts</div>
+            <div>Cards &amp; decks</div>
+            <div>Match history</div>
+            <div>MMR records</div>
+          </div>
+        </div>
+        <div style="background: #3a2a2a; border: 2px solid #aa5555; border-radius: 8px; padding: 12px 20px; min-width: 150px; text-align: center;">
+          <div style="font-weight: bold; color: #ffa8a8; font-size: 14px;">Redis</div>
+          <div style="font-size: 11px; color: #ccd; margin-top: 6px; line-height: 1.6;">
+            <div>Matchmaking queue</div>
+            <div>Session tokens</div>
+            <div>Active session index</div>
+          </div>
+        </div>
+      </div>
+
+    </div>
+
+  </div>
+</div>
+
+<div class="section" style="margin-top: 24px;">
+  <h3>Subsystem Build Order</h3>
+  <p class="subtitle">Each subsystem is its own spec → plan → implementation cycle</p>
+  <div style="display: flex; gap: 12px; flex-wrap: wrap; margin-top: 12px;">
+    <div style="background: #1e2e1e; border: 1px solid #5abf7a; border-radius: 6px; padding: 10px 16px; flex: 1; min-width: 130px;">
+      <div style="color: #5abf7a; font-size: 11px; font-weight: bold;">1ST</div>
+      <div style="font-weight: bold; margin-top: 4px;">Game Server</div>
+      <div style="font-size: 11px; color: #889; margin-top: 2px;">Core engine — everything depends on this</div>
+    </div>
+    <div style="background: #1e1e2e; border: 1px solid #7a5abf; border-radius: 6px; padding: 10px 16px; flex: 1; min-width: 130px;">
+      <div style="color: #7a5abf; font-size: 11px; font-weight: bold;">2ND</div>
+      <div style="font-weight: bold; margin-top: 4px;">Auth &amp; Accounts</div>
+      <div style="font-size: 11px; color: #889; margin-top: 2px;">Players need identities before anything else</div>
+    </div>
+    <div style="background: #1e1e2e; border: 1px solid #7a5abf; border-radius: 6px; padding: 10px 16px; flex: 1; min-width: 130px;">
+      <div style="color: #7a5abf; font-size: 11px; font-weight: bold;">3RD</div>
+      <div style="font-weight: bold; margin-top: 4px;">Collection &amp; Decks</div>
+      <div style="font-size: 11px; color: #889; margin-top: 2px;">Cards and deck building</div>
+    </div>
+    <div style="background: #1e1e2e; border: 1px solid #7a5abf; border-radius: 6px; padding: 10px 16px; flex: 1; min-width: 130px;">
+      <div style="color: #7a5abf; font-size: 11px; font-weight: bold;">4TH</div>
+      <div style="font-weight: bold; margin-top: 4px;">Matchmaking</div>
+      <div style="font-size: 11px; color: #889; margin-top: 2px;">Queue, MMR, session assignment</div>
+    </div>
+    <div style="background: #2e1e1e; border: 1px solid #4a7abf; border-radius: 6px; padding: 10px 16px; flex: 1; min-width: 130px;">
+      <div style="color: #4a7abf; font-size: 11px; font-weight: bold;">5TH</div>
+      <div style="font-weight: bold; margin-top: 4px;">Client</div>
+      <div style="font-size: 11px; color: #889; margin-top: 2px;">Ties all servers together visually</div>
+    </div>
+  </div>
+</div>

@@ -1,0 +1,150 @@
+<h2>Game Session Data Flow</h2>
+<p class="subtitle">The full lifecycle from login to match result — who talks to whom and when</p>
+
+<div class="mockup">
+  <div class="mockup-header">Complete Game Lifecycle</div>
+  <div class="mockup-body" style="padding: 20px; font-size: 12px; font-family: monospace;">
+
+    <div style="display: grid; grid-template-columns: 1fr 1fr 1fr 1fr; gap: 0; text-align: center; margin-bottom: 8px;">
+      <div style="color: #a8c8ff; font-weight: bold; padding: 8px; background: #1a2535; border-radius: 4px 0 0 4px;">CLIENT (Player)</div>
+      <div style="color: #c8a8ff; font-weight: bold; padding: 8px; background: #1a1525;">PLATFORM API</div>
+      <div style="color: #a8ffc8; font-weight: bold; padding: 8px; background: #151a15;">GAME SERVER</div>
+      <div style="color: #ffffa8; font-weight: bold; padding: 8px; background: #1a1a10; border-radius: 0 4px 4px 0;">DB / REDIS</div>
+    </div>
+
+    <!-- Phase 1 -->
+    <div style="background: #1a1a2a; border-left: 3px solid #5566aa; padding: 8px 12px; margin: 8px 0; border-radius: 0 4px 4px 0;">
+      <div style="color: #8899cc; font-size: 11px; margin-bottom: 6px; text-transform: uppercase; letter-spacing: 1px;">Phase 1 — Auth &amp; Setup</div>
+      <div style="display: flex; align-items: center; gap: 8px; margin: 4px 0;">
+        <div style="color: #a8c8ff; width: 110px; text-align: right;">POST /login</div>
+        <div style="color: #667;">──────────────────►</div>
+        <div style="color: #c8a8ff; flex: 1;">validate credentials → issue JWT</div>
+      </div>
+      <div style="display: flex; align-items: center; gap: 8px; margin: 4px 0;">
+        <div style="color: #a8c8ff; width: 110px; text-align: right;">JWT received</div>
+        <div style="color: #667;">◄──────────────────</div>
+        <div style="color: #c8a8ff; flex: 1;">JWT stored in session</div>
+      </div>
+      <div style="display: flex; align-items: center; gap: 8px; margin: 4px 0;">
+        <div style="color: #a8c8ff; width: 110px; text-align: right;">GET /collection</div>
+        <div style="color: #667;">──────────────────►</div>
+        <div style="color: #c8a8ff; flex: 1; display: flex; align-items: center; gap: 8px;">fetch cards &amp; decks <span style="color: #667;">──►</span> <span style="color: #ffffa8;">PostgreSQL</span></div>
+      </div>
+      <div style="display: flex; align-items: center; gap: 8px; margin: 4px 0;">
+        <div style="color: #a8c8ff; width: 110px; text-align: right;">select deck</div>
+        <div style="color: #667;">──────────────────►</div>
+        <div style="color: #c8a8ff; flex: 1;">POST /queue  { deckId, JWT }</div>
+      </div>
+    </div>
+
+    <!-- Phase 2 -->
+    <div style="background: #1a1a2a; border-left: 3px solid #7755aa; padding: 8px 12px; margin: 8px 0; border-radius: 0 4px 4px 0;">
+      <div style="color: #8899cc; font-size: 11px; margin-bottom: 6px; text-transform: uppercase; letter-spacing: 1px;">Phase 2 — Matchmaking</div>
+      <div style="display: flex; align-items: center; gap: 8px; margin: 4px 0;">
+        <div style="color: #a8c8ff; width: 110px; text-align: right;"></div>
+        <div style="color: #667; width: 18px;"></div>
+        <div style="color: #c8a8ff; flex: 1; display: flex; align-items: center; gap: 8px;">enqueue player <span style="color: #667;">──►</span> <span style="color: #ffa8a8;">Redis queue</span></div>
+      </div>
+      <div style="display: flex; align-items: center; gap: 8px; margin: 4px 0;">
+        <div style="color: #a8c8ff; width: 110px; text-align: right;"></div>
+        <div style="color: #667; width: 18px;"></div>
+        <div style="color: #c8a8ff; flex: 1;">matchmaker finds two players within MMR range</div>
+      </div>
+      <div style="display: flex; align-items: center; gap: 8px; margin: 4px 0;">
+        <div style="color: #a8c8ff; width: 110px; text-align: right;"></div>
+        <div style="color: #667; width: 18px;"></div>
+        <div style="color: #c8a8ff; flex: 1; display: flex; align-items: center; gap: 8px;">POST /internal/session/create <span style="color: #667;">──►</span> <span style="color: #a8ffc8;">Game Server</span></div>
+      </div>
+      <div style="display: flex; align-items: center; gap: 8px; margin: 4px 0;">
+        <div style="color: #a8c8ff; width: 110px; text-align: right;"></div>
+        <div style="color: #667; width: 18px;"></div>
+        <div style="color: #c8a8ff; flex: 1; display: flex; align-items: center; gap: 8px;">{ sessionId, p1Token, p2Token } <span style="color: #667;">◄──</span> <span style="color: #a8ffc8;">Game Server</span></div>
+      </div>
+      <div style="display: flex; align-items: center; gap: 8px; margin: 4px 0;">
+        <div style="color: #a8c8ff; width: 110px; text-align: right;">match found!</div>
+        <div style="color: #667;">◄──────────────────</div>
+        <div style="color: #c8a8ff; flex: 1;">push { ws_url, playerToken } to both clients</div>
+      </div>
+    </div>
+
+    <!-- Phase 3 -->
+    <div style="background: #151e15; border-left: 3px solid #55aa77; padding: 8px 12px; margin: 8px 0; border-radius: 0 4px 4px 0;">
+      <div style="color: #88cc99; font-size: 11px; margin-bottom: 6px; text-transform: uppercase; letter-spacing: 1px;">Phase 3 — Live Game (WebSocket)</div>
+      <div style="display: flex; align-items: center; gap: 8px; margin: 4px 0;">
+        <div style="color: #a8c8ff; width: 110px; text-align: right;">WS connect</div>
+        <div style="color: #667;">──────────────────────────────────►</div>
+        <div style="color: #a8ffc8; flex: 1;">authenticate playerToken, init game state</div>
+      </div>
+      <div style="display: flex; align-items: center; gap: 8px; margin: 4px 0;">
+        <div style="color: #a8c8ff; width: 110px; text-align: right;">state snapshot</div>
+        <div style="color: #667;">◄──────────────────────────────────</div>
+        <div style="color: #a8ffc8; flex: 1;">send initial GameState to both players</div>
+      </div>
+      <div style="display: flex; align-items: center; gap: 8px; margin: 4px 0; opacity: 0.6;">
+        <div style="color: #889; width: 110px; text-align: right; font-style: italic;">— game loop —</div>
+      </div>
+      <div style="display: flex; align-items: center; gap: 8px; margin: 4px 0;">
+        <div style="color: #a8c8ff; width: 110px; text-align: right;">{ action }</div>
+        <div style="color: #667;">──────────────────────────────────►</div>
+        <div style="color: #a8ffc8; flex: 1;">validate action against game state</div>
+      </div>
+      <div style="display: flex; align-items: center; gap: 8px; margin: 4px 0;">
+        <div style="color: #a8c8ff; width: 110px; text-align: right;">events broadcast</div>
+        <div style="color: #667;">◄──────────────────────────────────</div>
+        <div style="color: #a8ffc8; flex: 1;">emit events to BOTH players (+ spectators)</div>
+      </div>
+      <div style="display: flex; align-items: center; gap: 8px; margin: 4px 0; padding-left: 20px; opacity: 0.8;">
+        <div style="color: #a8c8ff; width: 90px; text-align: right; font-size: 11px;">client renders</div>
+        <div style="color: #667; font-size: 11px;">events only — never drives state</div>
+      </div>
+    </div>
+
+    <!-- Phase 4 -->
+    <div style="background: #1a1a2a; border-left: 3px solid #aa7755; padding: 8px 12px; margin: 8px 0; border-radius: 0 4px 4px 0;">
+      <div style="color: #ccaa88; font-size: 11px; margin-bottom: 6px; text-transform: uppercase; letter-spacing: 1px;">Phase 4 — Game End</div>
+      <div style="display: flex; align-items: center; gap: 8px; margin: 4px 0;">
+        <div style="color: #a8c8ff; width: 110px; text-align: right;">game over event</div>
+        <div style="color: #667;">◄──────────────────────────────────</div>
+        <div style="color: #a8ffc8; flex: 1;">broadcast result to players &amp; spectators</div>
+      </div>
+      <div style="display: flex; align-items: center; gap: 8px; margin: 4px 0;">
+        <div style="color: #a8c8ff; width: 110px; text-align: right;"></div>
+        <div style="color: #667; width: 18px;"></div>
+        <div style="color: #a8ffc8; flex: 1; display: flex; align-items: center; gap: 8px;">POST /internal/session/result <span style="color: #667;">──►</span> <span style="color: #c8a8ff;">Platform API</span></div>
+      </div>
+      <div style="display: flex; align-items: center; gap: 8px; margin: 4px 0;">
+        <div style="color: #a8c8ff; width: 110px; text-align: right;"></div>
+        <div style="color: #667; width: 18px;"></div>
+        <div style="color: #c8a8ff; flex: 1; display: flex; align-items: center; gap: 8px;">update MMR, write match history <span style="color: #667;">──►</span> <span style="color: #ffffa8;">PostgreSQL</span></div>
+      </div>
+      <div style="display: flex; align-items: center; gap: 8px; margin: 4px 0;">
+        <div style="color: #a8c8ff; width: 110px; text-align: right;"></div>
+        <div style="color: #667; width: 18px;"></div>
+        <div style="color: #ffa8a8; flex: 1;">clear session from Redis</div>
+      </div>
+    </div>
+
+  </div>
+</div>
+
+<div class="section" style="margin-top: 20px;">
+  <h3>Key Design Rules</h3>
+  <div style="display: flex; gap: 12px; flex-wrap: wrap; margin-top: 10px;">
+    <div style="background: #151e15; border: 1px solid #5abf7a; border-radius: 6px; padding: 10px 14px; flex: 1; min-width: 160px;">
+      <div style="font-weight: bold; color: #a8ffc8; font-size: 12px;">Server is authoritative</div>
+      <div style="font-size: 11px; color: #889; margin-top: 4px;">Client sends intent (action). Server validates, applies, and emits what actually happened.</div>
+    </div>
+    <div style="background: #1e1515; border: 1px solid #bf7a5a; border-radius: 6px; padding: 10px 14px; flex: 1; min-width: 160px;">
+      <div style="font-weight: bold; color: #ffc8a8; font-size: 12px;">Client renders events only</div>
+      <div style="font-size: 11px; color: #889; margin-top: 4px;">No client-side game state mutations. The client is a view layer over the event stream.</div>
+    </div>
+    <div style="background: #151525; border: 1px solid #7a5abf; border-radius: 6px; padding: 10px 14px; flex: 1; min-width: 160px;">
+      <div style="font-weight: bold; color: #c8a8ff; font-size: 12px;">Match notify via polling or WS</div>
+      <div style="font-size: 11px; color: #889; margin-top: 4px;">Client polls Platform API for match status, or holds a lightweight WebSocket connection while in queue.</div>
+    </div>
+    <div style="background: #151e15; border: 1px solid #5a7abf; border-radius: 6px; padding: 10px 14px; flex: 1; min-width: 160px;">
+      <div style="font-weight: bold; color: #a8c8ff; font-size: 12px;">Spectators are first-class</div>
+      <div style="font-size: 11px; color: #889; margin-top: 4px;">Spectators connect to Game Server and receive the same event stream, scoped to public information only.</div>
+    </div>
+  </div>
+</div>

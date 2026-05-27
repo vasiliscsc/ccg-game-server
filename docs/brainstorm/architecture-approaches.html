@@ -1,0 +1,65 @@
+<h2>Backend Architecture Approaches</h2>
+<p class="subtitle">Three ways to structure the server-side systems — pick the one that fits your team and timeline</p>
+
+<div class="options">
+  <div class="option" data-choice="a" onclick="toggleSelect(this)">
+    <div class="letter">A</div>
+    <div class="content">
+      <h3>Modular Monolith (C# / .NET)</h3>
+      <p>One ASP.NET Core application handles auth, collections, matchmaking, and game sessions. Clean internal module boundaries, but deployed as a single binary.</p>
+      <div class="pros-cons">
+        <div class="pros"><h4>Pros</h4><ul>
+          <li>Simplest to develop and deploy</li>
+          <li>No inter-service networking overhead</li>
+          <li>Easy to debug and trace</li>
+          <li>Modules can be extracted later</li>
+        </ul></div>
+        <div class="cons"><h4>Cons</h4><ul>
+          <li>Scaling is all-or-nothing</li>
+          <li>Game sessions and REST API compete for same process</li>
+          <li>Harder to use TypeScript for faster API iteration</li>
+        </ul></div>
+      </div>
+    </div>
+  </div>
+
+  <div class="option" data-choice="b" onclick="toggleSelect(this)">
+    <div class="letter">B</div>
+    <div class="content">
+      <h3>Core Split — Game Server (C#) + Platform API (TypeScript) ⭐ Recommended</h3>
+      <p>Two services with a clean seam: a C# game server manages WebSocket connections and live game state; a TypeScript API handles auth, collections, matchmaking, and REST traffic.</p>
+      <div class="pros-cons">
+        <div class="pros"><h4>Pros</h4><ul>
+          <li>Natural seam — game sessions vs. HTTP requests are genuinely different</li>
+          <li>C# game server shares language with Unity (if chosen)</li>
+          <li>TypeScript API is fast to iterate on</li>
+          <li>Each service scales independently</li>
+          <li>Not complex enough to cause deployment pain</li>
+        </ul></div>
+        <div class="cons"><h4>Cons</h4><ul>
+          <li>Two repos/deployments to manage</li>
+          <li>Requires inter-service auth (JWT shared secret or service tokens)</li>
+        </ul></div>
+      </div>
+    </div>
+  </div>
+
+  <div class="option" data-choice="c" onclick="toggleSelect(this)">
+    <div class="letter">C</div>
+    <div class="content">
+      <h3>Full Microservices (Auth / Collection / Matchmaking / Game)</h3>
+      <p>Each subsystem is its own independently deployable service with its own database.</p>
+      <div class="pros-cons">
+        <div class="pros"><h4>Pros</h4><ul>
+          <li>Maximum scaling flexibility</li>
+          <li>Clear ownership per team/service</li>
+        </ul></div>
+        <div class="cons"><h4>Cons</h4><ul>
+          <li>Premature for 1k–10k concurrent scale</li>
+          <li>Significant operational overhead (service mesh, distributed tracing)</li>
+          <li>Much slower to build and debug</li>
+        </ul></div>
+      </div>
+    </div>
+  </div>
+</div>
