@@ -280,7 +280,7 @@ interface IActionHandler<TAction> where TAction : GameAction {
 
 ### `IEventBus`
 
-Broadcast backbone. Maintains two subscriber lists per event type: one for the current player's triggers and one for the opponent's. The current player's list always fires first. Within each list, subscribers are ordered by `summonOrder` — the order minions were played to the board. This is distinct from board index (which shifts when minions die and gaps are filled); trigger fire order never changes after a minion is summoned.
+Broadcast backbone. Maintains two subscriber lists per event type: one for the current player's triggers and one for the opponent's. The current player's list always fires first. Within each list, subscribers are sorted by current board index at publish time — not at subscription time. This means a minion that fills a vacated slot fires in the position it currently occupies.
 
 ```csharp
 interface IEventBus {
@@ -389,7 +389,7 @@ interface ICardHandler {
 
 | Concern | Owner |
 |---|---|
-| Trigger fire order | `IEventBus` — current player first, then opponent; within each, ordered by `summonOrder` (not board index) |
+| Trigger fire order | `IEventBus` — current player first, then opponent; within each, sorted by current board index at publish time |
 | Death wave phases | `DeathResolutionService` — Phase 1 (remove) → Phase 2 (deathrattles) → Phase 3 (reborns) |
 | Death sort order | `DeathResolutionService` — current player board[0..n] by index, opponent board[0..n] by index, neutral zone by index |
 | Deathrattle before Reborn | `DeathResolutionService` — Phase 3 runs only after all Phase 2 actions complete |
@@ -437,7 +437,7 @@ The registered handler for this action type is invoked. It mutates `GameState` a
 
 ### ⑤ Publish Events → `IEventBus`
 
-Events are published in the order returned by the handler. For each event, `IEventBus` fires subscribers: current player's list first (ordered by `summonOrder`), then opponent's list (same). Subscribers enqueue new actions via `IActionQueue` — they do not process them inline.
+Events are published in the order returned by the handler. For each event, `IEventBus` fires subscribers: current player's list first (sorted by current board index at publish time), then opponent's list (same). Subscribers enqueue new actions via `IActionQueue` — they do not process them inline.
 
 ### ⑥ Aura Recalculation
 
