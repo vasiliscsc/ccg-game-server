@@ -11,7 +11,7 @@ The project is too large for a single plan file, so it is broken into **epics** 
 
 ## Tech stack & conventions
 
-- **.NET 8**, C# records for `GameAction`/`GameEvent` (immutable), classes for state types (mutable).
+- **.NET 10** (current LTS), C# records for `GameAction`/`GameEvent` (immutable), classes for state types (mutable).
 - **Testing:** xUnit + FluentAssertions. Every feature ships with **scenario tests**: build an initial `GameState`, submit an action (or sequence), assert the ordered list of published events *and* the resulting state. This gives regression coverage for free — future bugs become new scenarios.
 - **State mutation** happens only inside `IActionHandler` implementations.
 - **Effects/triggers/keywords** enqueue actions; they never mutate state directly.
@@ -61,7 +61,7 @@ CCG.GameLogic.Tests/      # xUnit scenario tests
 This captures the intended breakdown for *every* epic, so the structure survives even if detailed epic files are written incrementally. Detailed files expand each ticket with tests and notes.
 
 ### Epic 01 — Foundation & Core Engine
-- **T1.1** Solution & project scaffold (.NET 8 sln, lib + test projects, xUnit + FluentAssertions, green build)
+- **T1.1** Solution & project scaffold (.NET 10 sln, lib + test projects, xUnit + FluentAssertions, green build)
 - **T1.2** Minimal data model — `GameState`, `PlayerState`, `TurnState`, `GamePhase`
 - **T1.3** Action/Event base types — `GameAction`, `GameEvent`, `EndTurnAction`, `TurnStartedEvent`, `TurnEndedEvent`
 - **T1.4** Core interfaces — `IActionHandler<T>`, `IEventBus`, `IActionQueue`

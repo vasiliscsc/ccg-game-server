@@ -14,15 +14,15 @@
 
 **Files (create):**
 - `CCG.sln`
-- `CCG.GameLogic/CCG.GameLogic.csproj` (`net8.0`, `Nullable=enable`, `ImplicitUsings=enable`)
+- `CCG.GameLogic/CCG.GameLogic.csproj` (`net10.0`, `Nullable=enable`, `ImplicitUsings=enable`)
 - `CCG.GameLogic.Tests/CCG.GameLogic.Tests.csproj` (xUnit + FluentAssertions; project reference to the lib)
 
 **Scope in:** project files, package refs, a trivial smoke test that asserts `true`. **Out:** any game types.
 
 **Steps / verification:**
 - `dotnet new sln -n CCG`
-- `dotnet new classlib -n CCG.GameLogic -f net8.0`
-- `dotnet new xunit -n CCG.GameLogic.Tests -f net8.0`
+- `dotnet new classlib -n CCG.GameLogic -f net10.0`
+- `dotnet new xunit -n CCG.GameLogic.Tests -f net10.0`
 - `dotnet add CCG.GameLogic.Tests package FluentAssertions`
 - `dotnet add CCG.GameLogic.Tests reference CCG.GameLogic`
 - `dotnet sln add CCG.GameLogic CCG.GameLogic.Tests`
