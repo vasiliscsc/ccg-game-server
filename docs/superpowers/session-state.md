@@ -44,16 +44,45 @@ An online 1v1 collectible card game (Hearthstone-clone for initial scope). Featu
 
 **Implementation plan is COMPLETE** — broken into 16 epics with ~80 tickets under `docs/superpowers/plans/2026-05-27-ccg-game-logic/`. Start at the README there; it has the full epic index, ticket outline, and a writing-progress tracker. Each ticket is a small, testable increment using the scenario-test methodology (build state → submit action(s) → assert ordered events + state).
 
-**Next steps when resuming:**
-1. Read `docs/superpowers/plans/2026-05-27-ccg-game-logic/README.md` for the plan structure
-2. Begin implementation at **Epic 01 / T1.1** (project scaffold). The user picks up tickets one at a time and implements them collaboratively — do NOT auto-implement the whole thing.
-3. Use git: this repo was `git init`'d; the game-mechanics spec is committed. Commit after each ticket.
+**Implementation is NOT yet started** — we deferred kickoff in favour of a spec-refinement pass driven by the older Unity proof-of-concept at `C:\Users\vasil\UnityProjects\ccg`.
+
+### Spec refinements applied in session 2026-05-28
+
+1. **Card and Minion Identity subsection** added to spec §1 — establishes `definitionKey` as the only cross-entity link; `Card.id` and `MinionOnBoard.minionId` are independent never-reused allocators; tokens, graveyard lineage, and replay semantics specified.
+2. **Minion → Card Transitions subsection** added to spec §1 — defines `MinionToCardPolicy { Stripped, RetainEnchantments }`, retain/strip table, and the scope note that v1 doesn't track per-source keyword grants (future extension if needed).
+3. **`grantedKeywords: string[]`** field added to both `MinionOnBoard` and `Card` — non-aura keyword grants survive `RetainEnchantments` bounces; aura grants do not. `isInverted` preserved across all minion↔card transitions.
+4. **`ReturnToHandAction`** signature updated to include `policy: MinionToCardPolicy`. Epic 16 T16.3 rewritten with six scenario tests (Stripped, RetainEnchantments preserves buffs, aura grants don't survive, isInverted preservation, damage always discarded, full-hand destroy).
+
+### Next session resume point
+
+**Discuss the borrow list from the old Unity project** — `docs/superpowers/notes/2026-05-28-old-project-borrow-list.md` contains 13 discrete spec-refinement candidates harvested from the old proof-of-concept. Each has: what's there, why it matters for our spec, recommendation, and open questions. The user picks one item at a time; each decision either amends the spec/plan or gets rejected, then the notes file records the outcome.
+
+Items, ordered by impact:
+1. Stabilization loop iteration cap & wave events
+2. Pre-built `ITriggerCondition` singletons
+3. Snapshot triggers before processing (registration safety)
+4. Effect-op result chaining + Spell Damage +X hook
+5. `GetLegalActions(playerId)` API
+6. Deterministic `IRandom` interface
+7. Structured error codes
+8. Card definition hooks (art / description / sound / tribe)
+9. Nested `EffectContext` source-attribution rules
+10. Op `Results` ledger (deferred)
+11. Game-engine builder pattern (implementation detail, not spec)
+12. Targeting strategy registry
+13. Command-log vs event-log replay
+
+When all 13 are walked through (adopted, adapted, deferred, or rejected), and the spec + plan are reconciled with the outcomes, implementation can begin at **Epic 01 / T1.1**.
+
+**Do NOT start implementation** while the borrow-list pass is in progress. The user is driving the refinement.
 
 **Key decisions locked during planning:**
-- .NET 8, xUnit + FluentAssertions; records for actions/events, classes for state.
+- .NET 10 (current LTS), xUnit + FluentAssertions; records for actions/events, classes for state.
 - `GameEngine.Submit(action)` returns the full event list; `EventBus` is independently inspectable.
 - Trigger fire order = current player first, then by **board index at publish time** (not summonOrder, though summonOrder is kept for disambiguation).
 - Death wave: Phase 1 remove → Phase 2 deathrattles → Phase 3 reborn; new deaths deferred to next wave.
+- `Card.id` and `MinionOnBoard.minionId` are independent allocators; `definitionKey` is the only cross-entity link.
+- `MinionToCardPolicy` (Stripped / RetainEnchantments) parameterises minion→card transitions; `isInverted` always survives both.
 
 ---
 

@@ -59,7 +59,8 @@ auraAttackBonus, auraHealthBonus: int  // recalculated each aura pass; never sto
 attack: int                   // = baseAttack + Σenchantments.attackDelta + auraAttackBonus
 maxHealth: int                // = baseHealth + Σenchantments.healthDelta + auraHealthBonus
 currentHealth: int            // takes damage; healed up to maxHealth
-keywords: string[]            // resolved to IKeyword at runtime; Silence clears all
+keywords: string[]            // resolved to IKeyword at runtime; engine's live view (base + granted + aura-applied). Silence clears all.
+grantedKeywords: string[]     // subset of keywords added by non-aura buffs after summon (base keywords from the definition are NOT here). Used by RetainEnchantments bounce; Silence clears.
 isInverted: bool
 canAttack: bool
 attacksUsedThisTurn: int      // incremented on each attack
@@ -77,10 +78,11 @@ rarity: CardRarity
 baseManaCost: int
 baseAttack?, baseHealth?: int // Minion / Weapon only
 modifiers: StatModifier[]     // in-hand cost/stat changes; attack/healthDelta migrate to enchantments on play
+grantedKeywords: string[]     // keywords carried over from a RetainEnchantments bounce/shuffle. On play, these migrate to the new minion's grantedKeywords (and keywords) — they are not part of the card's base definition.
 effectiveCost: int            // max(0, baseManaCost + Σmodifiers.costDelta)
 definition: JsonElement       // has "normal" and "inverted" sections
 handlerKey?: string
-isInverted: bool
+isInverted: bool              // intrinsic state; preserved across all minion↔card transitions
 ```
 
 ### StatModifier (unified — used on both Card and MinionOnBoard)
@@ -125,6 +127,53 @@ MulliganState       — player1Completed: bool, player2Completed: bool
 CardPlayContext     — card: Card, playerId: string, targetId: string?, state: GameState (read-only)
 ```
 
+### Card and Minion Identity
+
+Cards and minions are independent entities with independent ID allocators. They are linked only by a shared `definitionKey` (string — e.g. `"river_crocolisk"`, `"boar"`) into the card-definition library.
+
+**Identity rules:**
+
+- `Card.id` and `MinionOnBoard.minionId` are allocated from two distinct counters; **IDs are never reused** within a session.
+- The `definitionKey` field on `Card` and on `MinionOnBoard` points into the static card-definition library. It is the only cross-entity link.
+- Playing a Card to summon a Minion does **not** transfer the Card's `id` to the minion. The Card leaves play (to graveyard or fabricated-elsewhere); the Minion is a new entity with a fresh `minionId`.
+- Tokens (minions summoned by effects with no originating card) have a `minionId` and a `definitionKey`. There is no `Card.id` associated with them while on the board.
+- `GraveyardMinion.originalCard` carries the originating Card snapshot for lineage-aware effects ("resummon the last minion that died"). The resummon uses only the snapshot's `definitionKey` — a *new* `minionId` is allocated.
+
+### Minion → Card Transitions (Bounce / Shuffle-In)
+
+Any action that moves a minion off the board into a card-shaped zone (hand or deck) takes a `policy` parameter of type `MinionToCardPolicy`:
+
+```
+MinionToCardPolicy = Stripped | RetainEnchantments
+```
+
+The effect that triggers the transition decides which policy applies (e.g. a Sap-style spell uses `Stripped`; a Recall-style spell uses `RetainEnchantments`). The action itself encodes the policy; the handler implements both behaviours.
+
+**Fabrication rule:** every minion→card transition fabricates a *new* Card with a freshly allocated `Card.id`. The minion's `minionId` is retired. Lineage to any earlier originating Card (if one existed) is not preserved on the fabricated Card.
+
+**What's retained, by policy:**
+
+| Field on the new Card | `Stripped` | `RetainEnchantments` |
+|---|---|---|
+| `definitionKey` | from minion | from minion |
+| `isInverted` | from minion | from minion |
+| `modifiers` | `[]` | copy of minion's `enchantments` (costDelta set to 0; attack/healthDelta preserved) — plus any cost-affecting modifiers the spec extends to in future |
+| `grantedKeywords` | `[]` | copy of minion's `grantedKeywords` |
+
+**Always lost (under both policies):**
+
+| Lost | Why |
+|---|---|
+| `currentHealth` damage | A Card has no current-health concept — only base + modifiers. The minion returns to full health on replay. |
+| `auraAttackBonus`, `auraHealthBonus` | Auras are recalculated continuously and never persisted on the minion; off-board they cease to apply. |
+| Aura-granted keywords | Granted by a live aura against board minions. Absent from `grantedKeywords`; vanish on transition. |
+| `attacksUsedThisTurn`, `canAttack`, `isFrozen`, `summonOrder` | Runtime board state with no Card-side equivalent. |
+| Base keywords from the card definition | Re-derived on next play from the definition library, not carried on the Card. |
+
+**Replay semantics:** when the fabricated Card is played again, the resulting minion inherits `grantedKeywords` from the Card into both `keywords` and `grantedKeywords` on the new minion, and inherits `modifiers` into the new minion's `enchantments`. `isInverted` is copied through unchanged. The new minion always has a fresh `minionId`.
+
+**Scope note — keyword grant tracking:** `grantedKeywords` only captures non-aura buffs (effects that mutate the minion permanently). Aura-applied keywords are never added to `grantedKeywords`; they live only in `keywords` and are rewritten on every aura recalculation. Silence clears both `keywords` and `grantedKeywords`. This design avoids any per-source ledger in v1; if a future card requires per-source attribution (e.g. "remove only the Taunt that Sergeant gave," not the base Taunt), the model must extend `grantedKeywords` to `KeywordGrant { sourceId, keyword }`.
+
 ---
 
 ## Section 2: Actions + Events
@@ -160,7 +209,7 @@ All actions carry a nullable `SourcePlayerId` (null = system-issued) and a `Requ
 | `EquipWeaponAction` | playerId, cardId, sourceId? |
 | `DestroyWeaponAction` | playerId, sourceId? |
 | `GiveCardAction` | playerId, cardId, sourceId? |
-| `ReturnToHandAction` | minionId, sourceId? |
+| `ReturnToHandAction` | minionId, policy: MinionToCardPolicy, sourceId? |
 | `TransformMinionAction` | minionId, newCardId, sourceId? |
 | `InvertTargetAction` | targetId, sourceId? |
 | `UnInvertTargetAction` | targetId, sourceId? |
