@@ -24,6 +24,19 @@ Our spec §4 ⑦ describes the death-wave loop and says "back to step 1 (next wa
 - Cap value — 32 feels generous; what's reasonable?
 - Should `StabilizationAbortedEvent` end the game, or just reject the action?
 
+### ✅ DECISION (2026-05-29): ADOPTED, adapted
+
+- **Cap = 16** (not 32). It's a runaway *detector*, not a budget — set just above legitimate worst case. Named constant `GameConstants.MaxDeathWaves`.
+- **Cap trip → abort the match as `NoContest`** (not a draw — would unfairly hit MMR; not reject+rollback — rollback restores the exact state the bug re-triggers from, so the player could just replay it into the same hang). Publish `StabilizationAbortedEvent` then `GameEndedEvent { reason: NoContest }`, set `phase = Ended`. No rollback/snapshot dependency.
+- **Wave markers adopted:** `DeathWaveStartedEvent { waveIndex }` / `DeathWaveEndedEvent { waveIndex, minionsResolved }`.
+- **`reason: NoContest`** added to `GameEndedEvent`.
+- **Telemetry = `StabilizationAbortReport { rngSeed, preActionState, triggeringAction, wavesReached, cascadeTrace[] }`** — formatted to drop straight into a scenario fixture (Build/Script/Assert) so the runaway is reproduced and the abort never regresses.
+- **Reborn confirmed non-looping** (self-consuming in Phase 3) — discussed and ruled out as a loop source; runaway is always Phase 2 deathrattle/summon-driven.
+- **Reborn keyword vs. charge split (related amendment, 2026-05-29):** the Reborn *keyword* is a persistent tag (counts for auras, survives bounce/copy, only Silence clears it); the one-time reborn *charge* is separate, modeled as `MinionOnBoard.rebornAvailable: bool`. Reborn firing consumes the bool, NOT the keyword. Charge initializes at summon to `keywords.Contains("reborn")`; the reborn-summon path summons with it false; a *copy* of a spent reborn minion is a fresh summon → charge re-initializes true. Considered a generic charge-container (`Dictionary<string,int>` + `IKeyword.InitialCharges`) but chose the bool (YAGNI — population of one, no other charge mechanics planned; trivially refactorable later). Spec amended: §1 `MinionOnBoard`, §3 Reborn keyword row, §4 ⑦ Phase 3.
+- Real fix is upstream content validation at card-load time; runtime cap is the backstop (termination is undecidable).
+
+Spec amended: §2B (events), §4 ⑦ (Death Resolution rewritten).
+
 ---
 
 ## Item 2 — Pre-built `ITriggerCondition` singletons (composable filters)

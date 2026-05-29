@@ -67,6 +67,7 @@ attacksUsedThisTurn: int      // incremented on each attack
 attacksAllowedThisTurn: int   // default 1; Windfury sets to 2 on summon
 summonOrder: int              // monotonically increasing per session; used for trigger fire ordering
 isFrozen, isDamaged: bool
+rebornAvailable: bool         // the one-time Reborn charge — distinct from the "reborn" keyword tag, which persists. Initialized at summon to keywords.Contains("reborn"); the reborn-summon path summons with it false; consuming it (NOT the keyword) is what reborn does. See §4 ⑦.
 ```
 
 ### Card
@@ -232,7 +233,7 @@ All events carry an `OccurredAt` timestamp and are append-only.
 | Event | Key fields |
 |---|---|
 | `GameStartedEvent` | sessionId, player1Id, player2Id |
-| `GameEndedEvent` | winnerId?, reason (Surrender/Defeat/Draw/Timeout) |
+| `GameEndedEvent` | winnerId?, reason (Surrender/Defeat/Draw/Timeout/NoContest) |
 | `TurnStartedEvent` | activePlayerId, turnNumber |
 | `TurnEndedEvent` | activePlayerId, turnNumber |
 | `MulliganStartedEvent` | playerId, options[] — fired once per player, each with only their own options |
@@ -259,6 +260,9 @@ All events carry an `OccurredAt` timestamp and are append-only.
 | `MinionTransformedEvent` | minionId, newCard |
 | `NeutralMinionSpawnedEvent` | minion |
 | `NeutralZoneRepopulatedEvent` | spawnedMinions[] |
+| `DeathWaveStartedEvent` | waveIndex |
+| `DeathWaveEndedEvent` | waveIndex, minionsResolved |
+| `StabilizationAbortedEvent` | wavesReached, lastWaveMinionIds[] — fatal; always immediately followed by `GameEndedEvent { reason: NoContest }` |
 
 **Combat:**
 
@@ -372,7 +376,7 @@ interface IKeyword {
 | Poisonous | `DamageTakenEvent` on target caused by this minion → enqueues `DestroyMinionAction` |
 | Windfury | `MinionSummonedEvent` on self → sets `attacksAllowedThisTurn = 2` |
 | Spell Damage +X | `SpellCastEvent` by owner → bumps spell damage amount in context |
-| Reborn | No listener — `DeathResolutionService` reads `keywords.Contains("reborn")` directly in Phase 3 |
+| Reborn | No listener — `DeathResolutionService` reads `keywords.Contains("reborn") && rebornAvailable` directly in Phase 3. Firing consumes `rebornAvailable` only; the keyword persists (still counts for auras, survives bounce/copy). |
 | Enrage | `DamageTakenEvent` + `HealedEvent` on self → enqueues stat update if `isDamaged` changed |
 | Freeze | `FreezeTargetAction` handler sets `isFrozen = true`; registers end-of-turn unfreeze listener |
 
@@ -498,11 +502,35 @@ Recalculation is triggered after any action that changes board composition, mini
 
 `DeathResolutionService` runs the wave loop:
 
-1. **Collect** all minions with `currentHealth ≤ 0` or marked for destruction. Sort: current player `board[0..n]` → opponent `board[0..n]` → neutral zone by index. If none, exit loop.
+1. **Collect** all minions with `currentHealth ≤ 0` or marked for destruction. Sort: current player `board[0..n]` → opponent `board[0..n]` → neutral zone by index. If none, exit loop. Otherwise publish `DeathWaveStartedEvent { waveIndex }` (0-based, incremented per wave).
 2. **Phase 1 — Remove & grieve:** for each in sort order — remove from board, add `GraveyardEntry`, publish `MinionDiedEvent`.
 3. **Phase 2 — Deathrattles:** for each in sort order — call `ICardHandler.OnDeath`, which enqueues this minion's deathrattle actions. Process the full action queue (steps ④–⑥ run for each). New deaths during this phase are deferred to the next wave.
-4. **Phase 3 — Reborns:** for each minion in the current wave that had the Reborn keyword (in sort order) — enqueue `SummonMinionAction` at 1 HP. Process fully. Run aura recalculation.
-5. Back to step 1 (next wave).
+4. **Phase 3 — Reborns:** for each minion in the current wave with the Reborn keyword **and** `rebornAvailable == true` (in sort order) — enqueue `SummonMinionAction` at 1 HP. Process fully. Run aura recalculation. The reborn copy **keeps the Reborn keyword** but is summoned with `rebornAvailable = false`, so it cannot reborn again (if it dies it goes to graveyard normally). The keyword still counts for auras and survives bounce. A *copy* made of that spent minion is a fresh summon → `rebornAvailable` re-initializes to `true` from the keyword, so the clone reborns if it dies.
+5. Publish `DeathWaveEndedEvent { waveIndex, minionsResolved }`. Back to step 1 (next wave).
+
+**Termination — iteration cap.** The wave loop is bounded by `GameConstants.MaxDeathWaves = 16`. Reborn cannot drive an unbounded loop (it is self-consuming, step 4), so the only runaway source is Phase 2 deathrattles/summons that keep producing new deaths — almost always a card-definition bug. If the loop is about to begin a wave whose `waveIndex` would reach `MaxDeathWaves`, the engine treats this as a fatal assertion failure, **not** a game event:
+
+1. Publish `StabilizationAbortedEvent { wavesReached, lastWaveMinionIds[] }`.
+2. Publish `GameEndedEvent { winnerId: null, reason: NoContest }` and set `phase = Ended`. The match is **voided** — not a draw (a draw would unfairly affect MMR).
+3. Emit a `StabilizationAbortReport` to the telemetry sink (below).
+
+The action is **not** rolled back and replayed — rollback would restore the exact state the runaway re-triggers from, so it cannot resolve the match. Aborting the whole match is the only safe escalation. There is no rollback/snapshot dependency: the engine simply tears the match down.
+
+This is a last-line backstop. The primary mitigation is upstream content validation at card-load time (flag obvious self-feeding patterns such as a deathrattle that summons a 0-health token); general termination is undecidable, which is why the runtime cap remains.
+
+**`StabilizationAbortReport` (telemetry — scenario-reproducible).** Formatted so a developer can paste it directly into a `CCG.GameLogic.Tests` scenario fixture (Build → Script → Assert), guaranteeing the runaway is reproduced and the abort behavior never regresses:
+
+```
+StabilizationAbortReport {
+  rngSeed:            ulong          // GameState.rngSeed — replays all randomness (see Item 6 / IRandom)
+  preActionState:     GameState      // full snapshot at the START of the triggering action — the Build step
+  triggeringAction:   GameAction     // the action submitted that began the runaway — the Script step
+  wavesReached:       int            // = MaxDeathWaves
+  cascadeTrace:       GameEvent[]     // ordered events from action start to abort — the Exact-trace Assert
+}
+```
+
+A regression scenario built from a report asserts: submitting `triggeringAction` against `preActionState` (seeded with `rngSeed`) terminates at wave `MaxDeathWaves` with `StabilizationAbortedEvent` then `GameEndedEvent { NoContest }` — i.e. it aborts rather than hangs.
 
 ### ⑧ Win Condition Check
 

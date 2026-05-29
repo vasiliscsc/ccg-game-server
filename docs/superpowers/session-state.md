@@ -57,9 +57,9 @@ An online 1v1 collectible card game (Hearthstone-clone for initial scope). Featu
 
 **Discuss the borrow list from the old Unity project** — `docs/superpowers/notes/2026-05-28-old-project-borrow-list.md` contains 13 discrete spec-refinement candidates harvested from the old proof-of-concept. Each has: what's there, why it matters for our spec, recommendation, and open questions. The user picks one item at a time; each decision either amends the spec/plan or gets rejected, then the notes file records the outcome.
 
-Items, ordered by impact:
-1. Stabilization loop iteration cap & wave events
-2. Pre-built `ITriggerCondition` singletons
+Items, ordered by impact (✅ = resolved this pass):
+1. ✅ Stabilization loop iteration cap & wave events — ADOPTED (cap=16, abort-as-NoContest, wave markers, scenario-repro telemetry). Also produced a related amendment: Reborn keyword/charge split (`MinionOnBoard.rebornAvailable`). See borrow-list note for full decision.
+2. ⏳ **NEXT** — Pre-built `ITriggerCondition` singletons
 3. Snapshot triggers before processing (registration safety)
 4. Effect-op result chaining + Spell Damage +X hook
 5. `GetLegalActions(playerId)` API
