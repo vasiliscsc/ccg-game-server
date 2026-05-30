@@ -37,6 +37,13 @@ Our spec §4 ⑦ describes the death-wave loop and says "back to step 1 (next wa
 
 Spec amended: §2B (events), §4 ⑦ (Death Resolution rewritten).
 
+**Plan impact:**
+- **Epic 04 T4.5** (`DeathResolutionService` wave loop) — add `GameConstants.MaxDeathWaves = 16`, `DeathWaveStartedEvent`/`DeathWaveEndedEvent`, and the abort path (`StabilizationAbortedEvent` → `GameEndedEvent{NoContest}` → `phase=Ended`; no rollback).
+- **Epic 04 T4.1** (`MinionOnBoard`) — add `rebornAvailable: bool`.
+- **Epic 03 T3.5** (`GameEndedEvent` / win check) — add `NoContest` reason.
+- **Epic 08 T8.5** (Reborn / Phase 3) — REWRITE: consume `rebornAvailable`, **keep** the keyword; reborn-summon path sets `rebornAvailable=false`; a copy re-initializes it from the keyword. (Current ticket text says "reborn removed" — wrong under the new model.)
+- **NEW ticket needed** (no telemetry concept in the plan) — `StabilizationAbortReport` sink + scenario-reproducible report (`rngSeed`/`preActionState`/`triggeringAction`/`wavesReached`/`cascadeTrace`). Suggest Epic 04 **T4.8** (depends on Item 6 `IRandom` for `rngSeed`).
+
 ---
 
 ## Item 2 — Pre-built `ITriggerCondition` singletons (composable filters)
@@ -58,6 +65,25 @@ Our spec defines `ITrigger.ShouldFire(GameEvent, GameState)` (§3) as an open me
 **Open questions:**
 - Should this live in the spec or be left as an implementation detail of `DefaultCardHandler`? Putting it in the spec gives every card the same vocabulary.
 
+### ✅ DECISION (2026-05-30): ADOPTED, in the spec
+
+- **`ITriggerCondition` added to §3** as a first-class interface — `bool Matches(GameEvent evt, GameState state, string sourceId)`. `sourceId` is the trigger's host entity; conditions evaluate the event relative to it. `ITrigger.ShouldFire` typically delegates to a condition (or tree).
+- **Single-condition library, two shapes:**
+  - *Parameterless singletons:* `AlwaysFires`, `SelfIsSource`, `SelfIsTarget`, `SelfIsRelated`, `FriendlyOnly`, `EnemyOnly`.
+  - *Parameterized factories:* `MinionTypeIs(definitionKey)`, `CardTypeIs(CardType)`, `CostAtLeast(n)`/`CostAtMost(n)`. (The parameterized shape was surfaced by the user's "2-mana-or-higher spell" example — a numeric threshold predicate that the flat-singleton list would have missed.)
+- **Combinators adopted:** `All` (AND) / `Any` (OR), nestable. Rated low-effort/high-leverage: the combinator *classes* are trivial (~6 lines, `All`/`Any` over children); the only real (still small) work is the recursive JSON descent in `DefaultCardHandler`, which the compound-condition requirement forces regardless of whether it's called a "combinator." `Not` deliberately deferred (same shape, add on first need — e.g. "other friendly minion died").
+- **Multiplicity confirmed as an orthogonal axis.** A card = handler = N triggers (the spec already supported this via "ICardHandler registers triggers, plural"); now made explicit with a `definition.triggers` array. Combinators compose conditions *within* one trigger; multiple effects watching different events are *separate* triggers. The user's two-line example (summon-on-spell + draw-on-beast-death) exercises both axes at once and is embedded in the spec as the worked example.
+- **Battlecry / Deathrattle confirmed to fit the same `{ type, condition, effect }` shape** (Battlecry = `MinionPlayed`+`SelfIsSource`; Deathrattle = `MinionDied`+`SelfIsRelated`). Key clarification recorded in spec: **conditions gate (*whether*), trigger `type` routes (*when/in what order*).** Battlecry resolves synchronously in the PlayCard pipeline (may pause for targeting); Deathrattle resolves in death-wave Phase 2 off the death snapshot — neither fires at raw publish time. The condition library does not alter these resolution semantics (§4 owns them).
+- **JSON encoding of the condition tree left as `DefaultCardHandler` implementation detail** — explicitly out of the spec; settles when the first compound card is authored.
+
+Resolved the open question above (spec vs. impl detail): **the interface + library + combinators go in the spec** (shared vocabulary, shared test target); only the wire encoding stays in the handler.
+
+Spec amended: §3 (`ITrigger` cross-reference + new `ITriggerCondition` subsection).
+
+**Plan impact:**
+- **Epic 08 T8.1** (`ICardHandler` + `ITrigger` infra + `DefaultCardHandler`) — add `Interfaces/ITriggerCondition.cs`, the single-condition library (parameterless singletons + parameterized factories), and `All`/`Any` combinators; introduce the `definition.triggers[]` array and the `DefaultCardHandler` JSON→condition mapping. T8.1 is already dense — recommend splitting the condition library into a **NEW ticket T8.10** (`ITriggerCondition` library + combinators, with its own unit tests as the shared regression target).
+- **Epic 08 T8.6 / T8.8** (Start-of-turn / On-Friendly-Death) — restate their `ShouldFire` predicates as conditions (`FriendlyOnly`, `Not(SelfIsRelated)`, etc.) rather than ad-hoc inline checks; note `Not` is added here on first need.
+
 ---
 
 ## Item 3 — Snapshot triggers before processing (registration-during-cascade safety)
@@ -72,6 +98,23 @@ Our spec §3 `IEventBus` says "publish ordering — current player's list first,
 
 **Open questions:**
 - Does the spec want the snapshot at *individual event publish* or at *action-handler batch start*? Different answer for "does an event fired during the action see triggers from a minion summoned earlier in the same action."
+
+### ✅ DECISION (2026-05-31): ADOPTED — per-event snapshot + creation-epoch filter
+
+Chose **per-event snapshot at publish time, plus a creation-epoch visibility filter** — which delivers the old project's "registered mid-cascade → subsequent events only" behavior (and Hearthstone's "a new minion never triggers off the event that introduced it") *uniformly*, without the heavier per-batch threading.
+
+- **Mechanism:** `GameEngine` keeps a monotonic `currentActionEpoch`, incremented as each action enters stage ④. Subscribers are stamped `birthEpoch`; events are stamped `originEpoch`; `Publish(E)` dispatches to listener `L` iff `L.birthEpoch < E.originEpoch`. Equal epoch → excluded, so a listener never sees events from the action that created it (incl. its own `MinionSummonedEvent`).
+- **Why epoch over per-batch threading** (resolves the open question — chose per-event, not per-batch): same observable behavior, but per-batch threading is *heavy* — it copies the subscriber registry per action, leaks a "batch" concept into the `IEventBus` contract (extra param or `BeginBatch`/`EndBatch` ambient state), introduces temporal coupling (pairing must survive the stabilization-abort tear-down), forces a batch-boundary definition (action vs. wave vs. cascade) that is itself a bug surface, and is non-local to debug. Epoch is a pointwise integer compare on the *live* list: lighter **and** strictly more robust (no stale frozen list can fire a removed subscriber; no intra-handler ordering dependency). Rejected the earlier "register-after-own-summon-event" deferral idea too — it was ad-hoc per event type (fragile); epoch is uniform.
+- **Robustness driver (the deciding factor):** new entity-introducing events (transform, resurrect, copy, …) are covered by the *same* rule with zero extra code, vs. the deferral approach where each must individually replicate the ritual or silently misbehave.
+- **Supporting invariant added to spec:** *all bus subscriptions happen inside action handlers* (stage ④ — `OnSummon`, `IKeyword.OnApplied`); nothing subscribes during publish (⑤) or aura recalc (⑥). This is what makes the epoch comparison total.
+
+Spec amended: §2B (event base gains `originEpoch`), §3 `IEventBus` (snapshot + epoch rule + invariant) and Deterministic Ordering table (new row), §4 ④ (epoch increment + stamping), §4 ⑤ (snapshot + filter on publish), §4 ⑦ Phase 2 (death-wave cross-reference).
+
+**Plan impact:**
+- **Epic 01 T1.3** (`GameEvent` base) — add `originEpoch: int` alongside `OccurredAt`.
+- **Epic 01 T1.4** (`IEventBus` interface) — subscribers carry a `birthEpoch`; document the epoch contract.
+- **Epic 01 T1.5** (`EventBus` impl) — snapshot subscriber lists at publish + filter by `birthEpoch < originEpoch`; add an epoch-visibility scenario test (a listener does not receive the event from the action that created it). Folds naturally into the existing ordering tests.
+- **Epic 01 T1.8** (`GameEngine` pipeline) — maintain `currentActionEpoch`, increment as each action enters stage ④, stamp returned events' `originEpoch` and new subscriptions' `birthEpoch`.
 
 ---
 
@@ -276,4 +319,14 @@ These came up in the investigation but don't merit changes:
 
 ## How to use this file
 
-Pick one item at a time. For each: confirm whether it goes into the spec, into the plan, or gets rejected. When a decision is made, this file gets updated with the decision and the spec/plan is amended in the same session.
+Pick one item at a time. For each: confirm whether it goes into the spec, into the plan, or gets rejected. When a decision is made, this file gets updated with the decision and the spec is amended in the same session.
+
+**Spec-first workflow + Plan-impact convention (set 2026-05-31).** During the borrow-list pass we amend the **spec only**, not the epic/ticket files — those are reconciled in one pass at the end (see below). To keep that reconciliation mechanical rather than archaeological, every `✅ DECISION` block ends with a **Plan impact:** list naming the affected epics/tickets and the change each needs, and flagging where a **NEW ticket** (or epic) is likely required. Carry this convention forward for every remaining item.
+
+## Plan reconciliation — end-of-pass task
+
+After all 13 items are walked through, before implementation begins at Epic 01 / T1.1:
+
+1. Walk every `Plan impact:` list in this file and apply the edits to the corresponding epic/ticket files under `docs/superpowers/plans/2026-05-27-ccg-game-logic/`.
+2. **Create new tickets / epics where flagged.** The amendments have already surfaced needs the original plan didn't cover — e.g. `StabilizationAbortReport` telemetry (Item 1 → new Epic 04 T4.8) and the `ITriggerCondition` library as its own unit (Item 2 → new Epic 08 T8.10). Remaining items may add more (e.g. Item 6 `IRandom` likely wants a foundation ticket; Item 5 `GetLegalActions`, Item 7 structured error codes, Item 12 targeting registry may each need their own). Do not force everything into existing tickets — add tickets/epics freely so each finalized amendment has a home, and update the README index + ticket outline + writing-progress tracker to match.
+3. Re-verify the README's "Resume point" line and epic index reflect the reconciled plan.

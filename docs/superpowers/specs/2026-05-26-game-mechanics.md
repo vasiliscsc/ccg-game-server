@@ -226,7 +226,7 @@ All actions carry a nullable `SourcePlayerId` (null = system-issued) and a `Requ
 
 ### 2B. GameEvent types
 
-All events carry an `OccurredAt` timestamp and are append-only.
+All events carry an `OccurredAt` timestamp and an `originEpoch: int` (the `currentActionEpoch` of the action that produced the event; used by `IEventBus` for creation-epoch visibility filtering — see §3 `IEventBus`). Events are append-only.
 
 **Lifecycle:**
 
@@ -343,6 +343,17 @@ interface IEventBus {
 }
 ```
 
+**Publish-time snapshot + creation-epoch visibility.** On every `Publish(E)` the bus snapshots the relevant subscriber lists at that instant and iterates the copy — a listener registered while `E` is being dispatched does not receive `E`. Dispatch is then filtered by **creation epoch**, so a listener never receives an event produced by the same action that created it (most importantly, a minion never reacts to its own `MinionSummonedEvent`):
+
+- `GameEngine` maintains a monotonic `currentActionEpoch`, incremented as each action begins processing (stage ④).
+- Each subscriber is stamped `birthEpoch = currentActionEpoch` when `Subscribe` is called.
+- Each event is stamped `originEpoch = currentActionEpoch` when its producing handler runs (alongside `OccurredAt`).
+- `Publish(E)` dispatches to listener `L` **only if `L.birthEpoch < E.originEpoch`**.
+
+Consequences: a listener receives only events from actions *strictly later* than the action that created it. Events already in flight from earlier actions are missed (the listener did not exist when they published); events from the *same* action — including the listener's own creation event and any sibling events — are excluded by the equal-epoch comparison; every subsequent action's events are received. This reproduces Hearthstone's rule (a freshly summoned or transformed minion does not trigger off the event that introduced it) **uniformly for every entity-introducing event**, with no per-event special-casing. Because the filter is a pointwise integer comparison against the *live* list, removed (unsubscribed) listeners are simply absent — there is no stale frozen list that could fire.
+
+**Invariant — subscriptions happen only inside action handlers.** Every bus subscription occurs during stage ④ (`ICardHandler.OnSummon`, `IKeyword.OnApplied`), so every listener has a well-defined `birthEpoch`. Nothing subscribes during event publication (⑤) or aura recalculation (⑥). This invariant is what makes the epoch comparison total.
+
 ### `IActionQueue`
 
 Effects and triggers enqueue actions here — they never mutate state directly. Ensures every state change goes through an `IActionHandler` and produces auditable events.
@@ -405,7 +416,72 @@ interface ITrigger {
 }
 ```
 
-Covers the full trigger catalog: Battlecry, Deathrattle, Start of Turn, End of Turn, Aura (continuous, via `IAura`), On Damage Taken, On Friendly Minion Death, On Spell Cast, Inspire, Combo, On Invert. New trigger types are added by implementing this interface.
+Covers the full trigger catalog: Battlecry, Deathrattle, Start of Turn, End of Turn, Aura (continuous, via `IAura`), On Damage Taken, On Friendly Minion Death, On Spell Cast, Inspire, Combo, On Invert. New trigger types are added by implementing this interface. `ShouldFire` is typically delegated to an `ITriggerCondition` (below) rather than hand-written per card.
+
+### `ITriggerCondition`
+
+Reusable, composable predicates that answer one question: **"should this trigger fire?"** They are separated from `ITrigger` so the common firing filters are written once, tested once, and shared across every card. An `ITrigger.ShouldFire` implementation typically delegates to a single condition or a composed tree of them.
+
+```csharp
+interface ITriggerCondition {
+    bool Matches(GameEvent evt, GameState state, string sourceId);
+}
+```
+
+`sourceId` is the trigger's host entity (the minion or hero the trigger belongs to). Conditions evaluate the event *relative to* the host — e.g. "friendly" means "owned by the same player as `sourceId`".
+
+**Single conditions — parameterless singletons** (referenced by reference; no per-check allocation):
+
+| Condition | Matches when |
+|---|---|
+| `AlwaysFires` | always |
+| `SelfIsSource` | the event's acting/source entity is `sourceId` |
+| `SelfIsTarget` | the event's target entity is `sourceId` |
+| `SelfIsRelated` | the event's primary subject (e.g. the dying minion in `MinionDiedEvent`) is `sourceId` |
+| `FriendlyOnly` | the event's relevant entity is owned by the same player as `sourceId` |
+| `EnemyOnly` | the event's relevant entity is owned by the opponent of `sourceId` |
+
+**Single conditions — parameterized factories:**
+
+| Condition | Matches when |
+|---|---|
+| `MinionTypeIs(definitionKey)` | the event's relevant minion has that `definitionKey`. (Tribe-based matching — "any Beast" — depends on Item 8 tribes, not yet in the model; this matches a *specific* minion definition.) |
+| `CardTypeIs(CardType)` | the event's relevant card is a Minion / Spell / Weapon / HeroPower — e.g. "whenever you play a Spell **or** a Weapon" |
+| `CostAtLeast(n)` / `CostAtMost(n)` | the event's relevant card's `effectiveCost` meets the threshold — e.g. "whenever you cast a 2-mana-or-higher spell" |
+
+**Combinators** compose conditions into a tree:
+
+| Combinator | Matches when |
+|---|---|
+| `All(c1, c2, …)` (AND) | every child matches; `All()` with no children matches |
+| `Any(c1, c2, …)` (OR) | at least one child matches; `Any()` with no children does not match |
+
+Combinators nest. Example — *"whenever a friendly Murloc or Beast dies"*:
+`All(FriendlyOnly, Any(MinionTypeIs("murloc"), MinionTypeIs("beast")))`.
+
+(`Not(c)` is the obvious third combinator — same shape — needed the first time a card reads "any *other* friendly minion died" = `All(FriendlyOnly, Not(SelfIsRelated))`. Left out of v1 until a card requires it.)
+
+**One card, many triggers.** A card's `definition` carries a `triggers` array; `DefaultCardHandler` registers each entry as its own `ITrigger` subscription, all active simultaneously for the host's lifetime. The condition library applies *per trigger*. These are two orthogonal axes: **combinators compose conditions *within* a single trigger; separate effects that watch different events are separate triggers.** Example — a minion reading *"Whenever you play a 2-mana-or-higher spell, summon a Beast. Whenever a Beast dies, draw a card."* registers two triggers:
+
+```jsonc
+"triggers": [
+  { "type": "OnSpellCast",
+    "condition": { "all": ["FriendlyOnly", { "costAtLeast": 2 }] },
+    "effect": { "summon": "beast_token" } },
+  { "type": "OnFriendlyMinionDeath",
+    "condition": { "minionType": "beast" },
+    "effect": { "draw": 1 } }
+]
+```
+
+**Conditions gate; trigger type routes.** `ITriggerCondition` answers only *whether* a trigger fires. *When and in what order* it resolves is governed by the trigger's `TriggerType`, not its condition — and several types carry engine-defined resolution semantics the condition layer does not touch:
+
+- **Battlecry** resolves synchronously inside the PlayCard pipeline (may pause for targeting via `PendingChoice`), *before* the minion's persistent triggers go live.
+- **Deathrattle** resolves in death-wave **Phase 2** (§4 ⑦), in active-player-L→R order, off the minion's death snapshot — *not* at `MinionDiedEvent` publish time. (Contrast `OnFriendlyMinionDeath`, a generic reactive trigger that *does* fire at publish time. Same event, different condition: Deathrattle = `SelfIsRelated`, OnFriendlyMinionDeath = `FriendlyOnly` excluding self.)
+
+So Battlecry and Deathrattle use the same `{ type, condition, effect }` shape and the same condition library (a conditional Battlecry like "if you're holding a Dragon" is just a custom or parameterized condition), but their timing/ordering remains defined by §4. Conditions cover the common gates; bespoke predicates that inspect arbitrary game state still implement `ITriggerCondition` directly.
+
+**JSON encoding** of the condition tree (the `{ "all": [...] }` / `{ "minionType": "…" }` shapes above) is a `DefaultCardHandler` implementation detail, *not* part of this spec — it settles when the first compound card is authored.
 
 ### `IAura`
 
@@ -443,6 +519,7 @@ interface ICardHandler {
 | Concern | Owner |
 |---|---|
 | Trigger fire order | `IEventBus` — current player first, then opponent; within each, sorted by current board index at publish time |
+| Event visibility (new subscribers) | `IEventBus` — snapshot at publish + `birthEpoch < originEpoch` creation-epoch filter; a listener never receives events from the action that created it |
 | Death wave phases | `DeathResolutionService` — Phase 1 (remove) → Phase 2 (deathrattles) → Phase 3 (reborns) |
 | Death sort order | `DeathResolutionService` — current player board[0..n] by index, opponent board[0..n] by index, neutral zone by index |
 | Deathrattle before Reborn | `DeathResolutionService` — Phase 3 runs only after all Phase 2 actions complete |
@@ -486,11 +563,11 @@ Precondition checks. Returns an error with no state mutation on failure.
 
 ### ④ Dispatch → `IActionHandler`
 
-The registered handler for this action type is invoked. It mutates `GameState` and returns `events[]`. This is the sole point of state mutation in the pipeline.
+The registered handler for this action type is invoked. It mutates `GameState` and returns `events[]`. This is the sole point of state mutation in the pipeline. `GameEngine` increments `currentActionEpoch` as the action enters this stage; every event the handler returns is stamped with that `originEpoch`, and any subscription the handler registers (e.g. via `ICardHandler.OnSummon`) is stamped with the same value as its `birthEpoch` — see §3 `IEventBus`.
 
 ### ⑤ Publish Events → `IEventBus`
 
-Events are published in the order returned by the handler. For each event, `IEventBus` fires subscribers: current player's list first (sorted by current board index at publish time), then opponent's list (same). Subscribers enqueue new actions via `IActionQueue` — they do not process them inline.
+Events are published in the order returned by the handler. For each event, `IEventBus` snapshots the subscriber lists at publish time and fires them filtered by creation epoch (`birthEpoch < originEpoch`, see §3 `IEventBus`): current player's list first (sorted by current board index at publish time), then opponent's list (same). The epoch filter means a listener never receives an event from the action that created it. Subscribers enqueue new actions via `IActionQueue` — they do not process them inline.
 
 ### ⑥ Aura Recalculation
 
@@ -504,7 +581,7 @@ Recalculation is triggered after any action that changes board composition, mini
 
 1. **Collect** all minions with `currentHealth ≤ 0` or marked for destruction. Sort: current player `board[0..n]` → opponent `board[0..n]` → neutral zone by index. If none, exit loop. Otherwise publish `DeathWaveStartedEvent { waveIndex }` (0-based, incremented per wave).
 2. **Phase 1 — Remove & grieve:** for each in sort order — remove from board, add `GraveyardEntry`, publish `MinionDiedEvent`.
-3. **Phase 2 — Deathrattles:** for each in sort order — call `ICardHandler.OnDeath`, which enqueues this minion's deathrattle actions. Process the full action queue (steps ④–⑥ run for each). New deaths during this phase are deferred to the next wave.
+3. **Phase 2 — Deathrattles:** for each in sort order — call `ICardHandler.OnDeath`, which enqueues this minion's deathrattle actions. Process the full action queue (steps ④–⑥ run for each). New deaths during this phase are deferred to the next wave. Minions summoned during this phase are registered with the `birthEpoch` of their own `SummonMinionAction`, so the creation-epoch filter (§3 `IEventBus`) keeps them from reacting to `MinionDiedEvent`s already published in this wave — they react only to events from subsequent actions.
 4. **Phase 3 — Reborns:** for each minion in the current wave with the Reborn keyword **and** `rebornAvailable == true` (in sort order) — enqueue `SummonMinionAction` at 1 HP. Process fully. Run aura recalculation. The reborn copy **keeps the Reborn keyword** but is summoned with `rebornAvailable = false`, so it cannot reborn again (if it dies it goes to graveyard normally). The keyword still counts for auras and survives bounce. A *copy* made of that spent minion is a fresh summon → `rebornAvailable` re-initializes to `true` from the keyword, so the clone reborns if it dies.
 5. Publish `DeathWaveEndedEvent { waveIndex, minionsResolved }`. Back to step 1 (next wave).
 

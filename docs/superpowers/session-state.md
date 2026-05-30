@@ -59,9 +59,9 @@ An online 1v1 collectible card game (Hearthstone-clone for initial scope). Featu
 
 Items, ordered by impact (✅ = resolved this pass):
 1. ✅ Stabilization loop iteration cap & wave events — ADOPTED (cap=16, abort-as-NoContest, wave markers, scenario-repro telemetry). Also produced a related amendment: Reborn keyword/charge split (`MinionOnBoard.rebornAvailable`). See borrow-list note for full decision.
-2. ⏳ **NEXT** — Pre-built `ITriggerCondition` singletons
-3. Snapshot triggers before processing (registration safety)
-4. Effect-op result chaining + Spell Damage +X hook
+2. ✅ Pre-built `ITriggerCondition` singletons — ADOPTED in spec §3 (2026-05-30): condition interface + single-condition library (parameterless singletons + parameterized factories) + `All`/`Any` combinators (`Not` deferred). Made multiplicity explicit (card = handler = N triggers via `definition.triggers`); clarified conditions *gate* while trigger `type` *routes* resolution (Battlecry synchronous in play pipeline, Deathrattle in death-wave Phase 2). JSON encoding left as `DefaultCardHandler` detail. See borrow-list note for full decision.
+3. ✅ Snapshot triggers before processing (registration safety) — ADOPTED in spec (2026-05-31) as **per-event snapshot at publish + creation-epoch filter**: `GameEngine.currentActionEpoch` (incremented per action ④); subscribers stamped `birthEpoch`, events stamped `originEpoch`; `Publish` dispatches iff `birthEpoch < originEpoch` so a listener never reacts to the event from the action that created it (incl. its own `MinionSummonedEvent`). Chosen over per-batch threading (heavy: registry copy, contract leak, temporal coupling, boundary definition) — epoch is lighter + more robust + uniform across all entity-introducing events. Invariant added: all subscriptions happen inside action handlers. See borrow-list note for full decision.
+4. ⏳ **NEXT** — Effect-op result chaining + Spell Damage +X hook
 5. `GetLegalActions(playerId)` API
 6. Deterministic `IRandom` interface
 7. Structured error codes
@@ -73,6 +73,8 @@ Items, ordered by impact (✅ = resolved this pass):
 13. Command-log vs event-log replay
 
 When all 13 are walked through (adopted, adapted, deferred, or rejected), and the spec + plan are reconciled with the outcomes, implementation can begin at **Epic 01 / T1.1**.
+
+**Spec-first workflow (2026-05-31):** the borrow-list pass amends the **spec only**; epic/ticket files are reconciled in one pass at the end. Each `✅ DECISION` in the borrow-list note carries a **Plan impact:** list (affected epics/tickets + flagged new tickets/epics) so the end reconciliation is mechanical. The end-of-pass reconciliation task (apply Plan-impact edits; **create new tickets/epics where flagged** — e.g. `StabilizationAbortReport` telemetry, `ITriggerCondition` library; update README index/outline/progress) is written up under "Plan reconciliation" in the borrow-list note. New epics/tickets may be created freely so each finalized amendment has a home.
 
 **Do NOT start implementation** while the borrow-list pass is in progress. The user is driving the refinement.
 
