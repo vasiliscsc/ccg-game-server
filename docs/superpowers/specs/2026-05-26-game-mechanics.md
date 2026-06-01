@@ -23,6 +23,8 @@ winnerId?: string
 pendingChoice?: PendingChoice
 pendingIntervention?: PendingIntervention
 mulliganState?: MulliganState
+rngSeed: ulong                        // fixed at match creation; drives ALL randomness via IRandom; server-side, never sent to client
+currentActionEpoch: int               // monotonic; ++ per action at stage ④; used for event-visibility filter AND per-action RNG derivation (see §3 IEventBus, IRandom)
 ```
 
 ### NeutralZoneConfig
@@ -59,8 +61,14 @@ auraAttackBonus, auraHealthBonus: int  // recalculated each aura pass; never sto
 attack: int                   // = baseAttack + Σenchantments.attackDelta + auraAttackBonus
 maxHealth: int                // = baseHealth + Σenchantments.healthDelta + auraHealthBonus
 currentHealth: int            // takes damage; healed up to maxHealth
-keywords: string[]            // resolved to IKeyword at runtime; engine's live view (base + granted + aura-applied). Silence clears all.
-grantedKeywords: string[]     // subset of keywords added by non-aura buffs after summon (base keywords from the definition are NOT here). Used by RetainEnchantments bounce; Silence clears.
+keywords: string[]            // maintained EFFECTIVE view = intrinsicKeywords ∪ grantedKeywords ∪ auraKeywords; resolved to IKeyword at runtime; what the engine queries. (Keyword analog of effectiveTribes.)
+intrinsicKeywords: string[]   // from the card definition, seeded at summon; Silence clears
+grantedKeywords: string[]     // PERMANENT non-aura grants after summon; retained across a RetainEnchantments bounce; Silence clears. Aura grants are NOT here.
+auraKeywords: string[]        // aura-granted, recomputed each aura pass; never persisted, never bounce-retained; Silence does not touch (they recompute). v1: DECLARATIVE keywords only — see "Unaddressed Features".
+intrinsicTribes: Tribe        // copied from the card's tribes at summon; immutable; survives Silence
+grantedTribes: Tribe          // permanent tribe grants ("becomes a Beast"); Silence clears to Tribe.None
+auraTribes: Tribe             // recomputed each aura pass; never persisted (parallels auraAttackBonus); drops when the aura leaves
+effectiveTribes: Tribe        // computed = intrinsicTribes | grantedTribes | auraTribes; all engine tribe checks use this
 isInverted: bool
 canAttack: bool
 attacksUsedThisTurn: int      // incremented on each attack
@@ -76,6 +84,7 @@ rebornAvailable: bool         // the one-time Reborn charge — distinct from th
 id, name: string
 type: CardType                // Minion | Spell | Weapon | HeroPower
 rarity: CardRarity
+tribes: Tribe                 // [Flags] intrinsic taxonomy from the definition; Tribe.None = tribeless (valid). Gameplay tag; NOT cleared by Silence. See "Tribes" below.
 baseManaCost: int
 baseAttack?, baseHealth?: int // Minion / Weapon only
 modifiers: StatModifier[]     // in-hand cost/stat changes; attack/healthDelta migrate to enchantments on play
@@ -127,6 +136,33 @@ PendingIntervention — respondingPlayerId: string, heldAction: GameAction, time
 MulliganState       — player1Completed: bool, player2Completed: bool
 CardPlayContext     — card: Card, playerId: string, targetId: string?, state: GameState (read-only)
 ```
+
+### Tribes
+
+Tribes are **gameplay tags** (tribal synergies — "your Beasts get +1/+1", "Discover a Murloc"), queried by the engine during aura recalc and effect resolution. Unlike keywords, a tribe is **inert** — it carries no behavior of its own; all behavior lives in the cards that reference it. It is therefore a closed, designer-curated taxonomy rather than a string-keyed extension point, and is modeled as a `[Flags]` enum so multi-tribe membership, granting, and removal are bitwise operations.
+
+```csharp
+[Flags]
+enum Tribe {
+    None   = 0,        // tribeless — a valid state
+    Beast  = 1 << 0,
+    Demon  = 1 << 1,
+    Murloc = 1 << 2,
+    // … new tribes ship with the content release that adds their cards (new cards are a library version bump anyway)
+}
+```
+
+A minion's effective tribes come from three sources, kept in separate fields so aura contributions never pollute persistent state (the same discipline as `auraAttackBonus`):
+
+- **`intrinsicTribes`** — from the card definition, copied to the minion at summon; immutable. **Survives Silence** (a silenced Beast is still a Beast).
+- **`grantedTribes`** — permanent grants from effects ("becomes a Beast in addition to its other types"). **Silence clears these to `Tribe.None`.**
+- **`auraTribes`** — granted by an active `IAura` ("your other minions are also Beasts"); fully recomputed each aura pass, never persisted, drops automatically when the aura leaves.
+
+`effectiveTribes = intrinsicTribes | grantedTribes | auraTribes`; all engine tribe checks read it, e.g. `(minion.effectiveTribes & Tribe.Beast) != 0`. Cards expose only `tribes: Tribe` (their intrinsic taxonomy, possibly `Tribe.None`); the three-way split exists only on `MinionOnBoard`. `Tribe.None` participates correctly in all the bitwise operations, so tribeless cards/minions need no special-casing.
+
+### Presentation data (out of library scope)
+
+Art, display description, and sound cues are **not** part of `CCG.GameLogic`. They never affect gameplay, and the client already carries `definitionKey` on every entity it renders, so it resolves these from the presentation catalog (owned by the Platform API) by `definitionKey` — exactly as it resolves card art. Keeping them out preserves the library's "standalone, no presentation dependencies" property: the engine emits `definitionKey`, the client joins on it. (`rarity` stays on `Card` because it is plausibly gameplay-relevant — e.g. "Discover a Legendary".)
 
 ### Card and Minion Identity
 
@@ -315,11 +351,37 @@ All events carry an `OccurredAt` timestamp and an `originEpoch: int` (the `curre
 | `InterventionWindowClosedEvent` | respondingPlayerId, wasSkipped |
 | `InterventionPlayedEvent` | respondingPlayerId, cardId |
 
+### 2C. Action Rejection
+
+When validation (§4 ②③) fails, the action is rejected with a **structured code** — never an English string baked into the engine. A rejection is the negative arm of `Submit`'s return; it is **not** a `GameEvent`, never touches the event bus, and never enters the event log. (Rejected actions cause no state change, so on replay they simply re-reject — consistent with Item 6's "log = real state-changing player actions only".)
+
+```csharp
+enum ActionRejectionCode {
+    WrongPhase, NotActivePlayer, CardNotInHand, NotEnoughMana,
+    InvalidTarget, TargetStealthed, MustTargetTaunt,
+    AttackerCannotAttack, AttackerFrozen, AttackerExhausted, BoardFull,
+    // … closed set; grows in lockstep with the §4 ②③ validation rules
+}
+
+record ActionRejection(ActionRejectionCode Code, string? Detail = null);
+```
+
+`Code` is **the contract**: tests assert on it, and the Game Server maps it to a localized client string. **`Detail` is optional, free-form, and explicitly non-contractual** — a human-readable diagnostic for logs only (e.g. `"needs 5, has 3"`). It is never asserted in tests and never shown to users (clients localize from `Code`), and may be `null`. Anything richer — typed per-code payloads — is deliberately out of scope for v1: the data is reconstructable by the caller from `(action, state)`, so a *specific* code can be upgraded to carry structured context later if one is ever found that genuinely cannot. The whole-mechanism version is not built up front.
+
+`Submit` returns a discriminated result rather than a bare event list:
+
+```csharp
+SubmitResult = Accepted(IReadOnlyList<GameEvent> events)
+             | Rejected(ActionRejection rejection);
+```
+
+The pure validation predicate (§4 ③) returns `Ok | Rejection` using this same `ActionRejection`; `Submit` wraps a non-`Ok` predicate result into `Rejected` without ever entering stage ④. The Game Server relays the `Rejected` result to the originating client as the response to its request.
+
 ---
 
 ## Section 3: Engine Architecture
 
-Six interfaces form the engine. The first five are the extensibility layer. The sixth is the infrastructure backbone.
+A small set of interfaces forms the engine: the **extensibility layer** (`IKeyword`, `IEffect`, `ITrigger` with its `ITriggerCondition`, `IAura`, `ICardHandler`) plus the **infrastructure backbone** (`IActionHandler`, `IEventBus`, `IActionQueue`, `IRandom`).
 
 ### `IActionHandler<TAction>`
 
@@ -377,16 +439,17 @@ interface IKeyword {
 }
 ```
 
-**Declarative keywords** (Taunt, Divine Shield, Stealth, Charge, Rush) have no-op `OnApplied`/`OnRemoved` — the pipeline queries their presence by string. Divine Shield is handled inside the `DealDamageAction` handler: if target has `divine_shield`, the keyword is removed, `DivineShieldBrokenEvent` is published, and no damage is applied.
+**Declarative keywords** (Taunt, Divine Shield, Stealth, Charge, Rush, **Spell Damage +X**) have no-op `OnApplied`/`OnRemoved` — the pipeline queries their presence by string. Divine Shield is handled inside the `DealDamageAction` handler: if target has `divine_shield`, the keyword is removed, `DivineShieldBrokenEvent` is published, and no damage is applied.
+
+**Spell Damage +X** carries a magnitude in the keyword string (`spell_damage:1`); it registers **no listener**. The bonus is *pulled* — aggregated on demand at spell-resolution start (see `EffectContext.SpellDamageBonus` below), not pushed reactively. This keeps the math in one place and makes it structurally impossible for the bonus to leak into combat or hero-power damage. A Spell-Power aura grants `spell_damage:X` into the target minion's `auraKeywords` (rewritten each recalc pass; `spell_damage` is declarative, so this is allowed — see `MinionOnBoard` keyword fields and "Unaddressed Features"), so aura-granted and intrinsic spell power flow through the same aggregation via the effective `keywords` view.
 
 **Active keywords** register event bus listeners:
 
 | Keyword | Listener behaviour |
 |---|---|
-| Lifesteal | `DamageTakenEvent` on self → enqueues `HealAction` for owner |
+| Lifesteal | `DamageTakenEvent` **caused by self** (`evt.sourceId == this minion`) → enqueues `HealAction` for owner |
 | Poisonous | `DamageTakenEvent` on target caused by this minion → enqueues `DestroyMinionAction` |
 | Windfury | `MinionSummonedEvent` on self → sets `attacksAllowedThisTurn = 2` |
-| Spell Damage +X | `SpellCastEvent` by owner → bumps spell damage amount in context |
 | Reborn | No listener — `DeathResolutionService` reads `keywords.Contains("reborn") && rebornAvailable` directly in Phase 3. Firing consumes `rebornAvailable` only; the keyword persists (still counts for auras, survives bounce/copy). |
 | Enrage | `DamageTakenEvent` + `HealedEvent` on self → enqueues stat update if `isDamaged` changed |
 | Freeze | `FreezeTargetAction` handler sets `isFrozen = true`; registers end-of-turn unfreeze listener |
@@ -401,7 +464,26 @@ interface IEffect {
 }
 ```
 
-`EffectContext` carries: sourceCardId, sourcePlayerId, targetId?, and a read-only `GameState` reference.
+`EffectContext` carries: `sourceId`, `sourcePlayerId`, `targetId?`, a read-only `GameState` reference, and `SpellDamageBonus: int`. (`sourceId` is the unified entity reference — formerly `sourceCardId`, generalized because a triggered effect's source is often a *minion*, not a card. See "Source Attribution" below.)
+
+#### Source Attribution
+
+Every action carries a `sourceId`, and `EffectContext` is built from the **action's own** source fields. Attribution follows one rule:
+
+> **`sourceId` is the entity whose effect this is — set by whoever *enqueues* the action — and is never inherited from the upstream cause.**
+
+- A played card's effects (including Battlecry) → `sourceId` = the card.
+- A minion's triggered effects (Deathrattle, On-Damage, …) → `sourceId` = that minion. A trigger's `OnFire` stamps `sourceId = its host entity`; it does **not** pass along the source of the action that fired the trigger.
+- Hero power / weapon effects → that hero power / weapon.
+- `sourcePlayerId` = the source's controller, captured at enqueue time (from the death snapshot if the source is already dead).
+
+So if Yeti's Deathrattle damages a minion, the damage's `sourceId` is **Yeti**, not the spell that killed Yeti. This determines friendly/enemy evaluation (Item 2 conditions), the Lifesteal heal target, and which entity "dealt" the damage for any watching trigger.
+
+**Attribution ≠ keyword application.** `sourceId` is *data* on the event, so a watcher correctly credits Yeti even though Yeti is dead. But Lifesteal/Poisonous are **active keywords backed by listeners** that were unsubscribed when Yeti left play — so they do **not** fire for Yeti's own post-death Deathrattle damage. This falls out of the active-keyword model (Item 8 follow-on) with no special-casing; see "Unaddressed Features" for the deferred snapshot-based-application case.
+
+**`SpellDamageBonus`** is a read-only value computed **once at the start of spell resolution** and held on the context for the whole cast. Every `DealDamageEffect` in that spell reads the *same* snapshot and bakes the final number into its enqueued `DealDamageAction` (the action handler stays dumb — it applies the number it's given). Because the bonus is spell-scoped, not hit-scoped: a spell that deals damage twice still applies the bonus to both hits, and a spell that kills its own Spell-Power minion mid-cascade does not lose the bonus for its second half. It is `0` for any non-spell source, so it cannot leak into combat or hero-power damage.
+
+The value is the aggregate, at snapshot time, of the caster's friendly **`spell_damage:X` keywords** in the effective `keywords` view — intrinsic *or* aura-granted (the latter via `auraKeywords`). **Player-scoped spell-damage sources** (e.g. "+1 to all spells this turn", "+3 to your next spell") are deliberately **out of scope here** — they belong to the future Modifier System (see `docs/superpowers/notes/2026-05-31-modifier-system.md`), because their scoped/consumable lifecycle is shared machinery with mana-cost reduction and should be designed once, for both, rather than baked into spell damage.
 
 ### `ITrigger`
 
@@ -494,10 +576,19 @@ interface IAura {
     IEnumerable<AuraEffect> Calculate(GameState state);
 }
 
-record AuraEffect(string TargetMinionId, int AttackBonus, int HealthBonus);
+record AuraEffect(
+    string TargetMinionId,
+    int AttackBonus,
+    int HealthBonus,
+    Tribe GrantedTribes = Tribe.None,
+    IReadOnlyList<string>? GrantedKeywords = null);  // DECLARATIVE keywords only — see below
 ```
 
 A minion that reaches ≤0 `maxHealth` due to an aura loss is treated identically to a minion killed by damage.
+
+Aura-granted tribes and keywords flow through `AuraEffect.GrantedTribes` / `GrantedKeywords`: each recalc pass, a minion's `auraTribes` is rewritten to the OR of all `GrantedTribes` targeting it, and its `auraKeywords` to the union of all `GrantedKeywords` targeting it (parallel to `auraAttackBonus`/`auraHealthBonus`) — so both appear/disappear with the aura and never persist.
+
+**Aura recalc grants DECLARATIVE keywords only.** An *active* keyword (one whose `IKeyword.OnApplied`/`OnRemoved` register/unregister event-bus listeners — Lifesteal, Poisonous, Enrage, Windfury, Freeze) cannot be aura-granted, because subscribing/unsubscribing during recalc (stage ⑥) would violate the invariant that *all* subscriptions occur inside action handlers (stage ④ — see §3 `IEventBus` and Item 3). Recalc therefore only rewrites lists; it never touches the bus. Active keywords reach a minion only via `intrinsicKeywords` (subscribed in `OnSummon`, ④) or `grantedKeywords` (subscribed by the granting effect's handler, ④; unsubscribed by the Silence handler, ④). See "Unaddressed Features" for the deferred aura-granted-active-keyword case.
 
 ### `ICardHandler`
 
@@ -514,6 +605,27 @@ interface ICardHandler {
 
 `OnDeath` is responsible for enqueuing this minion's Deathrattle actions only. Reborn is always handled by `DeathResolutionService` in Phase 3 — `ICardHandler.OnDeath` must not enqueue its own Reborn.
 
+### `IRandom`
+
+All in-match randomness flows through a single injected `IRandom`. No implementation may call `Random.Shared`, a clock-seeded RNG, or any other ambient source. This is the determinism contract that makes telemetry (`StabilizationAbortReport`, §4 ⑦) and replay possible.
+
+```csharp
+interface IRandom {
+    int Next(int maxExclusive);                   // [0, maxExclusive)
+    int Next(int minInclusive, int maxExclusive); // [minInclusive, maxExclusive)
+}
+```
+
+**Seed.** `GameState.rngSeed: ulong` is fixed at match creation and never mutates. It is server-side state — the client is a pure event renderer and never receives `GameState`, so the seed is structurally hidden from both players and cannot be used to predict draws. Tests construct the engine with a chosen seed for repeatable scenarios.
+
+**Per-action derivation (counter-based).** There is **no single long-lived PRNG** advanced across the match. Instead, at the start of each action's stage ④ the engine derives a *fresh* `IRandom` for that action from `mix(rngSeed, currentActionEpoch)` via a strong mixing function (e.g. splitmix64, so adjacent epochs yield uncorrelated streams). The handler draws from that instance as many times as it needs; draw order within the action is fixed by the deterministic pipeline ordering (below). Consequence: **any single action is independently reproducible from `(rngSeed, currentActionEpoch, preActionState)` alone** — no PRNG internal state is ever serialized. That is what makes `StabilizationAbortReport` self-contained (its `preActionState` snapshot already carries `currentActionEpoch`), and it reuses the very `currentActionEpoch` introduced for event visibility (§3 `IEventBus`). This is the counter-based / splittable-RNG model (cf. JAX key-split, NumPy `SeedSequence.spawn`, Slay the Spire's per-domain streams), chosen over a single advancing stream precisely so a mid-game slice can be reproduced without serializing RNG state.
+
+**Where randomness is consumed.** Only inside action handlers (stage ④), the sole state-mutation point. An effect or trigger that needs a random outcome enqueues an action whose handler does the roll — e.g. `DiscardCardAction { cardId = null }` picks the discard via `IRandom`; Discover generates its options; a "random enemy minion" action resolves its target. (Whether target *selectors* receive `IRandom` via `EffectContext` is deferred to Item 12 — targeting registry.)
+
+**Deck shuffle (at init).** The opening shuffle runs inside the engine at match setup as a Fisher-Yates over `IRandom`, seeded from the match seed like any other action. **Decklists are the stored input; the shuffled order regenerates from `rngSeed`.** The coin flip (first player) and opening-hand deal are seeded the same way.
+
+**Replay.** A full game replays from **`rngSeed` + both decklists + the ordered log of player actions**. System actions, random rolls, and the entire event cascade regenerate deterministically; `currentActionEpoch` reconstructs itself by counting actions, so it need not be stored in the log. (A mid-game *slice* repro such as the abort report does not replay from the start, so it relies on `currentActionEpoch` being carried in the captured `GameState`.)
+
 ### Deterministic Ordering
 
 | Concern | Owner |
@@ -525,6 +637,7 @@ interface ICardHandler {
 | Deathrattle before Reborn | `DeathResolutionService` — Phase 3 runs only after all Phase 2 actions complete |
 | New deaths during deathrattles | `DeathResolutionService` — deferred to next wave, not resolved mid-wave |
 | Action isolation | `GameEngine` — one action at a time; next action not started until death check runs to stability |
+| Randomness | `IRandom` — per-action stream derived from `mix(rngSeed, currentActionEpoch)`; consumed only in stage ④ handlers; draw order fixed by the rows above |
 
 ---
 
@@ -534,11 +647,11 @@ Nine stages in strict sequence. The engine does not advance to the next stage un
 
 ### ① Submit
 
-Player action arrives via WebSocket, or system action is dequeued from `IActionQueue`.
+Player action arrives via WebSocket, or system action is dequeued from `IActionQueue`. `Submit` returns a `SubmitResult` — `Accepted(events)` or `Rejected(ActionRejection)` (see §2C).
 
 ### ② Phase Guard
 
-Rejects the action if it is not valid in the current `GamePhase`. Returns an error to the client with no state mutation.
+Rejects the action if it is not valid in the current `GamePhase`, returning `Rejected(WrongPhase)` with no state mutation (see §2C).
 
 | Phase | Accepted actions |
 |---|---|
@@ -552,18 +665,20 @@ System actions bypass Phase Guard — they are trusted internal commands.
 
 ### ③ Action Validator
 
-Precondition checks. Returns an error with no state mutation on failure.
+Precondition checks. Returns `Rejected(ActionRejection)` with the matching code and no state mutation on failure (codes per §2C):
 
-- Turn ownership: is this the active player?
-- Mana affordability: `effectiveCost ≤ player.mana`
-- Target validity: target is alive, is not stealthed (for opponent spells/attacks), is a legal target type for this card
-- Taunt enforcement: if opponent has Taunt minions on board, attacks must target one of them
-- Attack eligibility: `canAttack = true`, `isFrozen = false`, `attacksUsedThisTurn < attacksAllowedThisTurn`
-- Board space: player board has fewer than 7 minions before summoning
+- Turn ownership: is this the active player? → `NotActivePlayer`
+- Mana affordability: `effectiveCost ≤ player.mana` → `NotEnoughMana`
+- Target validity: target is alive, is not stealthed (for opponent spells/attacks), is a legal target type for this card → `InvalidTarget` / `TargetStealthed`
+- Taunt enforcement: if opponent has Taunt minions on board, attacks must target one of them → `MustTargetTaunt`
+- Attack eligibility: `canAttack = true` (else `AttackerCannotAttack`), `isFrozen = false` (else `AttackerFrozen`), `attacksUsedThisTurn < attacksAllowedThisTurn` (else `AttackerExhausted`)
+- Board space: player board has fewer than 7 minions before summoning → `BoardFull`
+
+**Validation is a pure, standalone-invokable predicate.** Stages ② and ③ together form a side-effect-free function `(action, state) → Ok | Rejection` (where `Rejection` is the `ActionRejection` of §2C) — no mutation, no dispatch (④), no events. It is the **single source of truth for legality**: `Submit` runs it before ④, and any "is this action legal?" / "what actions are legal?" query — a future `GetLegalActions(playerId)`, bot move generation, or client pre-flight (greying out unaffordable cards / illegal targets) — **must call this same predicate** rather than re-deriving legality. This guarantees previewed/enumerated legality can never drift from what `Submit` actually accepts. (The positive-enumeration API itself — `GetLegalActions`, via brute-force-then-filter over candidate actions — is deferred to the future bot-support epic; only the standalone-predicate seam is part of the core.)
 
 ### ④ Dispatch → `IActionHandler`
 
-The registered handler for this action type is invoked. It mutates `GameState` and returns `events[]`. This is the sole point of state mutation in the pipeline. `GameEngine` increments `currentActionEpoch` as the action enters this stage; every event the handler returns is stamped with that `originEpoch`, and any subscription the handler registers (e.g. via `ICardHandler.OnSummon`) is stamped with the same value as its `birthEpoch` — see §3 `IEventBus`.
+The registered handler for this action type is invoked. It mutates `GameState` and returns `events[]`. This is the sole point of state mutation in the pipeline. `GameEngine` increments `GameState.currentActionEpoch` as the action enters this stage; every event the handler returns is stamped with that `originEpoch`, and any subscription the handler registers (e.g. via `ICardHandler.OnSummon`) is stamped with the same value as its `birthEpoch` — see §3 `IEventBus`. The engine also derives this action's `IRandom` from `mix(GameState.rngSeed, currentActionEpoch)`; every random outcome the handler produces is drawn from that instance (see §3 `IRandom`).
 
 ### ⑤ Publish Events → `IEventBus`
 
@@ -599,8 +714,8 @@ This is a last-line backstop. The primary mitigation is upstream content validat
 
 ```
 StabilizationAbortReport {
-  rngSeed:            ulong          // GameState.rngSeed — replays all randomness (see Item 6 / IRandom)
-  preActionState:     GameState      // full snapshot at the START of the triggering action — the Build step
+  rngSeed:            ulong          // GameState.rngSeed; with preActionState.currentActionEpoch reproduces this action's RNG via mix(rngSeed, epoch) (see §3 IRandom)
+  preActionState:     GameState      // full snapshot at the START of the triggering action (carries currentActionEpoch) — the Build step
   triggeringAction:   GameAction     // the action submitted that began the runaway — the Script step
   wavesReached:       int            // = MaxDeathWaves
   cascadeTrace:       GameEvent[]     // ordered events from action start to abort — the Exact-trace Assert
@@ -657,3 +772,25 @@ When the engine issues `StartInterventionAction`:
 - On response: if a card was played, it is processed first (full pipeline), then `heldAction` is processed
 - On skip or timeout: `heldAction` is processed directly
 - `GamePhase` → `InProgress`
+
+---
+
+## Unaddressed Features
+
+Features the current architecture **deliberately does not support** and that are deferred **indefinitely** (no planned epic/ticket, unlike the "deferred to a future epic" items tracked in the borrow-list/plan). Each entry records the limitation, why it exists, and what enabling it would cost — so a future card requirement can reopen it with full context rather than rediscovering the constraint.
+
+### Aura-granted active keywords
+
+An aura **cannot grant an *active* keyword** (one whose `IKeyword.OnApplied`/`OnRemoved` register event-bus listeners — Lifesteal, Poisonous, Enrage, Windfury, Freeze). Aura grants (`AuraEffect.GrantedKeywords` → `MinionOnBoard.auraKeywords`) are restricted to **declarative** keywords (Taunt, Divine Shield, Stealth, Charge, Rush, Spell Damage +X).
+
+- **Why:** aura recalc runs in pipeline stage ⑥. Granting an active keyword there would require subscribing/unsubscribing listeners during recalc, violating the locked invariant (§3 `IEventBus`, Item 3) that *all* bus subscriptions happen inside action handlers (stage ④) — the property that makes the `birthEpoch < originEpoch` epoch-visibility filter total. Recalc must stay a side-effect-free list rewrite.
+- **Cost to enable:** a deferred-subscription mechanism (queue listener add/remove discovered during recalc and apply them inside an action-handler boundary) plus revisiting the Item 3 invariant. Non-trivial; reopens a foundational decision.
+- **Status:** no card in scope needs it. Revisit only when one does.
+
+### Active keywords on a dead source
+
+A minion's **active keywords (Lifesteal, Poisonous, …) do not apply to damage its own Deathrattle deals after it has died.** The damage is still *attributed* to the dead minion (`sourceId` on the event, so watching triggers and friendly/enemy checks resolve correctly — see §3 "Source Attribution"), but the keyword *effects* don't fire.
+
+- **Why:** Lifesteal/Poisonous are listener-backed active keywords; the listeners were unsubscribed when the minion left play (Phase 1), before its Deathrattle resolves (Phase 2). No listener, no effect. This falls out of the active-keyword model with zero special-casing.
+- **Cost to enable:** snapshot-based keyword application — read the source's keywords off its death snapshot and apply Lifesteal/Poisonous outside the listener model, for dead sources only. A parallel code path to the listener mechanism.
+- **Status:** no card in scope needs it. Revisit only when one does.

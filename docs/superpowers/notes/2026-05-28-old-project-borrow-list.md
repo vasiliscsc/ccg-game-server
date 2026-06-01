@@ -136,6 +136,34 @@ Spell Damage +X is in our locked keyword list (§ "Decided feature scope"), so t
 - Should `Results` be cleared between effects or persist across the entire action's cascade?
 - Are there spell-damage interactions we want to *forbid* (Spell Damage on Hero Power damage, e.g.) and where would those filters live?
 
+### ✅ DECISION (2026-05-31): ADAPTED — split in two; leaned down hard from the note's synchronous-op framing
+
+The note's recommendation was written against the old project's **synchronous op model** (ops mutate state inline, could hand results to the next op). **That model is not ours** — our spec (§3 `IActionQueue`) has effects *enqueue* actions; they never mutate state or get a synchronous result back. That single difference splits the item:
+
+**(A) Variable amounts / Spell Damage +X → ADOPTED, via a read-only *pulled* snapshot; Spell Damage demoted from active keyword to declarative.**
+- `EffectContext` gains **`SpellDamageBonus: int`**, computed **once at spell-resolution start** and held for the whole cast. Spell-scoped, not hit-scoped (a two-hit spell applies it to both; killing your own Spell-Power minion mid-cascade doesn't drop it for the second half). The shared `DealDamageEffect` bakes it into the enqueued `DealDamageAction`; the handler stays dumb.
+- **Spell Damage +X moves out of the Active-keyword (listener) table into the Declarative list.** No `SpellCastEvent` listener, no mutable shared context field, no fire-before-read ordering coupling. The bonus is *pulled* (aggregated on demand), not *pushed*. This is strictly leaner **and** closes the "forbidden interactions" open question for free: the bonus is `0` for non-spell sources, so it structurally cannot leak into combat or hero-power damage.
+- **Magnitude lives in the keyword string** (`spell_damage:1`) — no new model field (population is tiny).
+- **Aura-granted spell power** reuses the existing `grantedKeywords` rail (an aura grants `spell_damage:X`, rewritten each recalc pass); intrinsic and aura-granted spell power flow through the same aggregation. No new `AuraEffect` channel needed.
+- **v1 source list = intrinsic keyword + aura-granted keyword.** That covers the locked "Spell Damage +X" scope.
+
+**(B) Op result chaining / `Results` ledger → REJECTED for v1; redirected to the event bus.**
+- "React to an outcome" in our architecture *is* the event bus, hardened by Item 3's epoch filter. "If damage dealt → draw" = an `ITrigger` on `DamageTakenEvent`; "summon a copy of what you killed" reads the death snapshot off `MinionDiedEvent`. A synchronous `Results` ledger is a foreign synchronous-model concept that duplicates the bus. Consistent with **Item 10**, already deferred. Kept on radar only if a card needs same-action *synchronous* inspection the bus genuinely can't express (none expected).
+
+**Player-scoped spell-damage modifiers ("+1 all spells this turn", "+3 next spell") → DEFERRED to the future Modifier System** (`docs/superpowers/notes/2026-05-31-modifier-system.md`). Surfaced during discussion: spell damage and **mana-cost reduction** are the *same shape* (scoped/filtered/lifecycle-bound modifier to a named quantity, aggregated at a read point). The only forward-compatibility constraint mana reduction places on spell damage today is "don't bake a bespoke player-scoped modifier store into spell damage" — honored by simply not building one. The minion-bound + snapshot parts (above) are local to spell resolution, share nothing with cost, and cannot paint us into a corner, so Item 4 resolves now without waiting on the Modifier System. **No reserved `spellPowerModifiers` field** — that would itself be the premature commitment.
+
+Resolved open questions: spell-damage scope = **direct spell damage only** (snapshot at cast; cascade damage attributed to its own source per Item 9); forbidden interactions handled structurally by the `0`-for-non-spell rule. The `Results`-clearing question is moot (rejected).
+
+Spec amended: §3 (Declarative-keywords paragraph — Spell Damage added + pull/aura explanation; Active-keyword table — Spell Damage row removed; `IEffect` — `EffectContext.SpellDamageBonus` defined with snapshot/aggregate/scope rules).
+
+**Plan impact:**
+- **Epic 08 (keywords)** — Spell Damage implemented as a **declarative** keyword (no listener): a `spell_damage:X` parser + the friendly-board aggregate. Remove any "Spell Damage registers a `SpellCastEvent` listener" framing from the keyword ticket.
+- **Epic 08 / aura ticket** — Spell-Power aura grants `spell_damage:X` via `grantedKeywords` on recalc (no new `AuraEffect` field).
+- **Spell-resolution / `DefaultCardHandler` ticket** — compute `EffectContext.SpellDamageBonus` once at cast start; `DealDamageEffect` reads it and bakes it into `DealDamageAction`. Add a scenario test: two-hit spell applies bonus to both hits; self-killing-Spell-Power-minion spell keeps bonus for second half; non-spell damage gets `0`.
+- **No new ticket for `Results` ledger** (rejected). **No player-scoped-modifier work** here (deferred to Modifier System — see that note for its own plan impact when scheduled).
+
+> **Correction (2026-06-01, via Item 8 follow-on):** aura-granted `spell_damage:X` was specified here to flow into `grantedKeywords`. That was wrong — `grantedKeywords` is the permanent, bounce-retained set, so an aura grant would have survived a `RetainEnchantments` bounce. The keyword model was expanded to a 4-field form (`intrinsic`/`granted`/`aura`/effective `keywords`); aura `spell_damage` now flows into **`auraKeywords`** (recomputed each pass, never retained). Spell Damage remains declarative, so the aura grant is permitted. See Item 8 → "Follow-on amendment".
+
 ---
 
 ## Item 5 — `GetLegalActions(playerId)` API surface
@@ -155,6 +183,20 @@ Implementation: enumerate every plausible action shape (PlayCard for each card i
 **Open questions:**
 - This call could be expensive on large boards × full hands × many targets. Do we cache, or accept O(hand × targets) latency? Probably fine for 1v1 CCG sizes.
 - Do we expose this in `CCG.GameLogic` or only at the Game Server layer? Recommend: in the library.
+
+### ✅ DECISION (2026-05-31): ADOPTED — seam now, enumerator deferred to a future bot-support epic
+
+Split the item the way Item 4's player-scoped modifiers were split: lock the cheap architectural seam in the spec now; defer the speculative machinery to where its consumer lives.
+
+- **Lock now (spec, v1): validation (②③) is a pure, side-effect-free, standalone-invokable predicate** `(action, state) → Ok | Rejection` — no mutation/dispatch/events — and the **single source of truth for legality**. `Submit` calls it before ④; any "is this legal / what's legal" query must call the *same* predicate, so enumerated legality can never drift from what `Submit` accepts. (Our pipeline already separates ②③ from ④, so this is mostly making it explicit + a named unit.) Spec amended: §4 ③.
+- **`GetLegalActions(playerId)` itself → DEFERRED to a new future bot-support epic** (see Plan impact). No consumer in core v1 scope (bots are a deferred subsystem; client pre-flight is a Game-Server/client concern; tests can hit the predicate directly). Building the enumerator now would be YAGNI — **but the user has confirmed bots are definitely coming**, so it is *deferred, not rejected*, and gets a home.
+- **Home = `CCG.GameLogic`** (confirmed, not the Game Server). The library must be complete without depending on the server; the validator lives in the library, so the enumerator that reuses it does too — and tests, bots, and the Unity client (which references the library directly) all consume it. Pure enumeration + validation, no framework deps, so it doesn't violate the "no engine/framework deps" rule.
+- **Approach = brute-force-then-filter** (locked): generate candidate actions (`PlayCard` per hand card × every entity; `Attack` per minion × every entity; `HeroPower`; `EndTurn`; …) and let the standalone predicate reject the illegal ones. Reuses the validator exactly, handles edge cases for free (a must-target spell on an empty board yields zero legal pairs → correctly unplayable), and **decouples this from Item 12** (no target *enumerator* needed — only the existing target *validator*). O(hand × entities) is fine at 1v1 sizes; no caching (YAGNI).
+- **Phase-aware:** runs Phase Guard first, so in `PendingChoice`/`PendingIntervention` it surfaces the already-enumerated options from the pending-state object; meaningful primarily in `InProgress`. **Do not enumerate Mulligan keep-subsets** (2^handsize) — leave that to `MulliganState`.
+
+**Plan impact:**
+- **Epic 01 / validator ticket** (Phase Guard + Action Validator) — expose ②③ as a **pure, standalone-invokable predicate** `(action, state) → Ok | Rejection`, callable independently of `Submit`/dispatch. `Submit` consumes it. This is the only v1 change. (Pairs naturally with **Item 7** structured rejections when that's decided — the predicate returns the rejection code.)
+- **NEW EPIC (end of plan): Bot Support.** Created during reconciliation to house `GetLegalActions(playerId)` (brute-force-then-filter, library-resident, phase-aware) **plus the other logic a bot needs** (move generation/scoring scaffolding, state evaluation hooks, a bot driver loop, etc. — to be fleshed out when the epic is written). `GetLegalActions` is its first ticket. Depends only on the ②③ predicate seam above. Add to the README epic index during reconciliation.
 
 ---
 
@@ -177,6 +219,28 @@ Tests can pass a deterministic seed for repeatable scenarios.
 **Open questions:**
 - Should the seed be public (so clients can verify replay) or hidden (so opponents can't predict)? Probably hidden, but tests need access.
 - One RNG per game or per player? One per game is simpler; per player avoids correlated rolls.
+
+### ✅ DECISION (2026-06-01): ADOPTED — counter-based per-action reseed; shuffle at init from seed
+
+The `IRandom` interface is adopted as recommended. The substance was in *how* reproducibility works, and we landed on the **counter-based / splittable-RNG** model rather than a single advancing stream.
+
+- **Interface (spec §3 `IRandom`):** `int Next(int maxExclusive)` + `int Next(int minInclusive, int maxExclusive)`. Every random pick goes through an injected `IRandom`; no `Random.Shared`/clock-seeded/ambient RNG anywhere. Stated as the determinism contract.
+- **Seed (spec, `GameState.rngSeed: ulong`):** fixed at match creation, never mutates. Both *open questions resolved by architecture, not preference*: **visibility** — the client is a pure event renderer and never receives `GameState`, so the seed is structurally hidden (can't be used to predict draws); tests inject a chosen seed. This is exactly the PvP-CCG industry pattern (Hearthstone/MTGA keep the seed server-side and ship event logs; the seed *is* hidden information). **One-RNG-per-game vs per-player** — moot under the counter-based model: there is one logical source per match, split per action by epoch; per-player streams add nothing in 1v1. YAGNI.
+- **Per-action reseed by epoch (the real decision):** **no single long-lived PRNG.** At the start of each action's stage ④ the engine derives a fresh `IRandom` from `mix(rngSeed, currentActionEpoch)` (strong mixer, e.g. splitmix64). Picked over a single advancing stream because the already-locked `StabilizationAbortReport` hands you a *mid-game* `preActionState` and must reproduce a single action in isolation — a continuous stream would force serializing PRNG internal state into every snapshot; counter-based makes any action reproducible from `(rngSeed, epoch, preActionState)` with **zero PRNG-state serialization**. This is the JAX-key-split / NumPy `SeedSequence.spawn` / Slay-the-Spire-per-domain-stream model, and it **reuses the `currentActionEpoch` already introduced for Item 3's event-visibility filter** — one counter, two jobs.
+- **`currentActionEpoch` moved into `GameState`** (minor refinement to Item 3, which originally placed it on `GameEngine`). Rationale: making RNG a pure function of state (`mix(state.rngSeed, state.currentActionEpoch)`) makes snapshots self-describing — `StabilizationAbortReport.preActionState` now carries the epoch, so the report needs **no new field** to be reproducible. Matches the user's articulated mental model exactly ("every action carries the gamestate, the epoch, and the seed").
+- **Where randomness is consumed:** only in stage ④ handlers (the sole mutation point). Effects/triggers needing a random outcome enqueue an action whose handler rolls (`DiscardCardAction{cardId=null}`, Discover option generation, random-target actions). Selector RNG access (Item 12's open question) **deferred to Item 12**.
+- **Deck shuffle → at init, from the seed (Fork B decided by user):** engine runs a Fisher-Yates over `IRandom` at match setup; **decklists are the stored input, shuffled order regenerates from `rngSeed`.** Coin flip + opening deal seeded the same way.
+- **Replay model (clarified, ties into Item 13):** a full game = `rngSeed` + both **decklists** + the ordered log of **player actions** only. System actions, random rolls, and the whole event cascade regenerate; `currentActionEpoch` reconstructs by counting actions (not stored in the log). Mid-game slice repro (abort report) relies on the epoch carried in the captured `GameState`.
+
+Spec amended: §1 `GameState` (+`rngSeed`, +`currentActionEpoch`), §3 new `IRandom` subsection + Deterministic Ordering table row, §4 ④ (per-action RNG derivation), §4 ⑦ `StabilizationAbortReport` comment (epoch-carried-in-state reproducibility).
+
+**Plan impact:**
+- **Epic 01 — NEW foundation ticket (suggest T1.9): `IRandom` + `DeterministicRandom`.** `IRandom` interface, a splittable/counter-based impl, the `mix(seed, epoch)` derivation helper, and a `Shuffle` (Fisher-Yates) extension over `IRandom`. Unit tests: same `(seed, epoch)` ⇒ identical sequence; adjacent epochs uncorrelated; `Shuffle` reproducible.
+- **Epic 01 T1.x (`GameState`)** — add `rngSeed: ulong` and `currentActionEpoch: int` to the state record.
+- **Epic 01 T1.8 (`GameEngine` pipeline)** — at stage ④, derive the per-action `IRandom` from `mix(rngSeed, currentActionEpoch)` (the epoch increment already lands here from Item 3); thread it to the dispatched handler.
+- **Epic 04 T4.8 (`StabilizationAbortReport`)** — confirm `preActionState` carries `currentActionEpoch` so the report is self-contained (no separate epoch field). Dependency on this ticket (flagged in Item 1) is now satisfied.
+- **Game-setup ticket (shuffle/coin/opening deal)** — perform the shuffle via the `Shuffle` extension over the per-action `IRandom`; store decklists, not shuffled order.
+- **Epic 16 / replay backlog (Item 13)** — record the replay package as `rngSeed` + decklists + player-action log; do not log system actions or epochs.
 
 ---
 
@@ -202,6 +266,23 @@ Engine returns rejections; UI layer maps codes to localised strings; tests asser
 **Open questions:**
 - Do we want a rejection event published on the bus, or just a return value from `Submit`? Recommend return value only — rejected actions never enter the event log.
 
+### ✅ DECISION (2026-06-01): ADOPTED — code + optional non-contractual Detail; return value only
+
+Structural work was already done by **Item 5** (validation = pure predicate `(action, state) → Ok | Rejection`); Item 7 just gives `Rejection` its shape. Adopted as recommended, leaned to the middle on the payload question.
+
+- **`ActionRejectionCode` enum (closed)** — the legality vocabulary; stable identifiers tests assert on, codes the Game Server maps to localized client strings. Members derive directly from the §4 ②③ rules (`WrongPhase`, `NotActivePlayer`, `CardNotInHand`, `NotEnoughMana`, `InvalidTarget`, `TargetStealthed`, `MustTargetTaunt`, `AttackerCannotAttack`, `AttackerFrozen`, `AttackerExhausted`, `BoardFull`, …). Grows in lockstep with validation rules; single producer (the Item 5 predicate).
+- **`record ActionRejection(ActionRejectionCode Code, string? Detail = null)`** — chose **code + optional Detail** over code-only and over structured payload. `Code` is the contract; **`Detail` is free-form, logs-only, explicitly non-contractual** (never asserted in tests, never shown to users, may be null). **Typed per-code payloads rejected as premature** (the deciding reasoning, recorded in discussion): the payload data is reconstructable by the caller from `(action, state)`; no current consumer (tests assert on `Code`; client localizes from `Code`; logs have `action`+`state`) is blocked without it; it would add a per-code type + wire encoding + client branch per rule against an open rule set; and the lean options keep a clean upgrade path (promote *one* code to a payload later if one is ever found that genuinely can't be reconstructed). Detail is the pragmatic middle — a cheap diagnostic without committing to a schema.
+- **Delivery = return value only** (resolves the open question). Rejection is the negative arm of `Submit`'s result; **never a `GameEvent`, never on the bus, never in the event log.** Consistent with Item 5 (validation side-effect-free) and Item 6 (only real state-changing player actions are logged; rejected actions re-reject on replay). The Game Server relays the `Rejected` result to the originating client as that request's response. No `ActionRejectedEvent`.
+- **`Submit` return type promoted** to a discriminated `SubmitResult = Accepted(IReadOnlyList<GameEvent>) | Rejected(ActionRejection)` (was "returns the full event list"). Falls out of the above; not a separate decision.
+
+Spec amended: new **§2C Action Rejection** (enum + `ActionRejection` + `SubmitResult`), §4 ① (Submit returns `SubmitResult`), §4 ② (`Rejected(WrongPhase)`), §4 ③ (each precondition annotated with its code; returns `Rejected`), §4 ③ predicate paragraph (cross-ref to §2C). Also fixed the §3 lead-in that hard-counted "six interfaces" (stale since Item 2's `ITriggerCondition` and Item 6's `IRandom`) to a non-brittle extensibility/infrastructure listing.
+
+**Plan impact:**
+- **Epic 01 / validator ticket** (Phase Guard + Action Validator, the Item 5 predicate) — define `ActionRejectionCode` + `ActionRejection`; the predicate returns `Ok | Rejection`. This is the single producer of codes. Unit tests assert on `Code`, not strings.
+- **Epic 01 T1.8 (`GameEngine` / `Submit`)** — change the return contract to `SubmitResult` (`Accepted` | `Rejected`); ②③ failures short-circuit to `Rejected` before ④.
+- **All Epic 01–16 validation tests** — assert on `Code` rather than English strings (the old-project pattern this item replaces). Establish the `Code`-assertion convention in the first validator ticket so later epics follow it.
+- **Game Server (out of `CCG.GameLogic`, future)** — owns code→localized-string mapping and relaying `Rejected` over WebSocket; library stays UI-string-free.
+
 ---
 
 ## Item 8 — Card definition hooks for art / description / sound / tribe
@@ -223,6 +304,47 @@ Leave the actual asset resolution entirely to the client; the library treats the
 **Open questions:**
 - Tribes: typed enum (locked set) or open strings (any tag)? Hearthstone has ~10 tribes; we could lock them. But open strings let card-crafting (T16.6) invent new ones, which is a feature.
 
+### ✅ DECISION (2026-06-01): ADOPTED SELECTIVELY — tribes in as a `[Flags]` enum; presentation out of the library
+
+Split on one line: **does game logic read it, or only the client?** Tribes are read by logic → first-class typed; art/description/sfx are client-only → not in the library at all (leaner than the note's "carry an opaque artKey").
+
+- **Tribes → `[Flags] enum Tribe`** (resolves the open question; user initially leaned enum, and on analysis the enum is the better fit — the recommendation was *revised* away from the string[] lean). The deciding insight: **keywords are strings because each resolves to an `IKeyword` *implementation*; a tribe resolves to nothing — it's an inert label, all behavior lives in the cards that reference it.** So the string-keyed-extension-point rationale doesn't transfer; tribes are a closed designer-curated taxonomy, the textbook enum case. `[Flags]` specifically because the requirement is **multi-tribe + grantable**: membership = `(tribes & Tribe.Beast) != 0`, granting = `|=`, removal = `& ~` — allocation-free, cheap in hot aura-recalc, multi-value native. The only cost (closed set → recompile to add a tribe) is a non-issue: new tribes ship with the content release that adds their cards, which is a library version bump regardless. String[] would only win for hot-adding tribes to a *running, un-redeployed* engine — not our deployment model.
+- **Tribeless allowed** (user refinement, supersedes an earlier "≥1 tribe" thought): `Tribe.None = 0` is a valid state and participates correctly in all bitwise ops, so tribeless cards/minions need zero special-casing. No load-time non-empty validation.
+- **Tribe-granting model** (user asked to design it): three separate fields on `MinionOnBoard`, mirroring the keyword model but kept apart so aura contributions never pollute persistent state (same discipline as `auraAttackBonus`):
+  - `intrinsicTribes` — from definition, copied at summon, immutable, **survives Silence** (silenced Beast is still a Beast).
+  - `grantedTribes` — permanent grants ("becomes a Beast"), **Silence clears to `Tribe.None`**.
+  - `auraTribes` — from active `IAura`, recomputed each pass, never persisted, drops with the aura.
+  - `effectiveTribes = intrinsicTribes | grantedTribes | auraTribes` — what the engine queries. `Card` exposes only intrinsic `tribes: Tribe`; the three-way split is minion-only. All three included now (permanent + aura granting) since `[Flags]` makes the extra field free — no YAGNI deferral needed.
+- **Presentation (art / description / sfx) → OUT of `CCG.GameLogic`.** Client resolves from the Platform-API presentation catalog by `definitionKey` (which it already has on every rendered entity), exactly as it resolves art. Preserves the library's "no presentation deps" property; consistent with the borrow list's own "animation/presentation belongs to the client" omission. `rarity` stays on `Card` (plausibly gameplay-relevant — Discover-a-Legendary).
+
+Spec amended: §1 `Card` (+`tribes: Tribe`), §1 `MinionOnBoard` (+`intrinsicTribes`/`grantedTribes`/`auraTribes`/`effectiveTribes`), new §1 **Tribes** subsection (the `[Flags] enum Tribe` + sources + Silence rule) and **Presentation data (out of library scope)** subsection, §3 `IAura` (`AuraEffect.GrantedTribes` + recompute rule).
+
+**Plan impact:**
+- **Epic 01 / data-model tickets** — add the `[Flags] enum Tribe`; add `tribes: Tribe` to `Card`; add the four tribe fields to `MinionOnBoard`; `effectiveTribes` as a computed property.
+- **Epic 04 (summon) ticket** — initialize `intrinsicTribes` from `card.tribes` at summon; `grantedTribes`/`auraTribes` start `Tribe.None`.
+- **Epic 08 / Silence ticket** — Silence clears `grantedTribes` (→ `None`), leaves `intrinsicTribes`. Add to the existing "Silence clears enchantments/grantedKeywords" behavior.
+- **Aura ticket (`IAura`/recalc)** — `AuraEffect` gains `GrantedTribes`; recalc rewrites each target's `auraTribes` as the OR of incoming grants (alongside the attack/health bonus rewrite). Add a scenario test: tribal aura grants `Beast`, drops when the aura source leaves; Silence does not remove the *intrinsic* tribe.
+- **No library work for art/description/sfx** — Platform-API catalog + client concern; out of scope here.
+
+#### Follow-on amendment (2026-06-01): keywords expanded to the same 4-field model
+
+Prompted by a user consistency question (tribes got 4 fields — `intrinsic`/`granted`/`aura`/`effective` — why do keywords have only 2?). On inspection the asymmetry hid a **real bug from Item 4**: that decision routed aura-granted `spell_damage:X` into `grantedKeywords`, but `grantedKeywords` is the **permanent, RetainEnchantments-bounce-retained** set — so an aura grant would wrongly survive a bounce, and it contradicted `grantedKeywords`'s own "non-aura" definition.
+
+- **`MinionOnBoard` keywords now mirror tribes:** `intrinsicKeywords` (from def, seeded at summon, Silence clears) + `grantedKeywords` (permanent non-aura grants, bounce-retained, Silence clears, **aura grants NOT here**) + `auraKeywords` (aura-granted, recomputed each pass, never persisted/retained) → `keywords` (maintained effective union, IKeyword-resolved, what the engine queries).
+- **Silence asymmetry vs tribes (deliberate, documented):** keywords — Silence clears `intrinsic` **and** `granted` (a silenced Taunt minion loses Taunt); tribes — Silence clears `granted` only (silenced Beast is still a Beast). `auraKeywords`/`auraTribes` untouched by Silence (they recompute).
+- **`AuraEffect` gained `GrantedKeywords` (declarative-only)** alongside `GrantedTribes`; recalc rewrites `auraKeywords` from it.
+- **Scope lever = declarative-only aura keywords.** Active keywords (listener-backed: Lifesteal/Poisonous/Enrage/Windfury/Freeze) cannot be aura-granted, because subscribing during recalc (⑥) would violate **Item 3's invariant** ("all subscriptions inside action handlers ④"). Declarative aura grants (Taunt, `spell_damage`, …) need no listener, so recalc stays a side-effect-free list rewrite. Active keywords still work via `intrinsic`/`granted` (their OnApplied/OnRemoved fire in ④ handlers). Aura-granted *active* keywords → **Unaddressed Features** (see below).
+- **Item 4 correction applied:** aura `spell_damage:X` now flows into `auraKeywords`, not `grantedKeywords`. (Marked at Item 4's decision block.)
+
+**New convention — "Unaddressed Features" registry:** added a top-level section to the spec for features the architecture deliberately does not support and that are deferred **indefinitely** (distinct from "deferred to a future epic" items like `GetLegalActions` or the Modifier System, which have a planned home). First entry: **aura-granted active keywords** (why: Item 3 subscription-timing invariant; cost to enable: deferred-subscription mechanism + reopening Item 3). Use this section for future indefinite deferrals.
+
+**Plan impact (additions to Item 8's list):**
+- **Epic 01 / `MinionOnBoard` ticket** — add `intrinsicKeywords` + `auraKeywords`; `keywords` becomes the maintained effective union; restate `grantedKeywords` as permanent/bounce-retained only.
+- **Epic 08 / Silence ticket** — clear `intrinsicKeywords` + `grantedKeywords`; leave `auraKeywords`.
+- **Epic 08 / bounce (T16.3) ticket** — retain `grantedKeywords` only; `auraKeywords` vanish on transition (already noted in §1 transition table).
+- **Aura ticket** — `AuraEffect.GrantedKeywords` (declarative-only); recalc rewrites `auraKeywords`; assert active keywords are rejected/ignored from aura grants.
+- **Epic 08 / Spell Damage** — aura path targets `auraKeywords` (Item 4 correction).
+
 ---
 
 ## Item 9 — `PlayContext → EffectContext` conversion / nested contexts
@@ -238,6 +360,25 @@ Our spec defines `EffectContext` in §3 (`sourceCardId, sourcePlayerId, targetId
 **Open questions:**
 - This decision affects "if Yeti's deathrattle damages a minion, who is the *source* of that damage — Yeti, or the spell that killed Yeti?" Real gameplay implications (poisonous, lifesteal attribution). Recommend: Yeti.
 
+### ✅ DECISION (2026-06-01): ADOPTED as a clarification — attribution rule locked; two latent gaps fixed
+
+The attribution *plumbing* already existed (every action + the key events carry `sourceId`; Item 2's conditions key off the trigger host's `sourceId`). So this item is the **rule** + two fixes it surfaced. Four decisions:
+
+1. **Source attribution rule:** `sourceId` is the entity *whose effect this is*, set by **whoever enqueues the action**, and **never inherited from the upstream cause**. A trigger's `OnFire` stamps `sourceId = its host entity`. Played card → the card; minion's triggered effect → that minion; hero power/weapon → itself. `sourcePlayerId` = the source's controller, captured at enqueue (from death snapshot if already dead). **Yeti's deathrattle damage is sourced to Yeti**, not the spell that killed it (resolves the open question). No "original caster" inheritance.
+2. **Generalize `EffectContext.sourceCardId` → `sourceId`** (unified entity ref, the one every action/event already uses) + keep `sourcePlayerId`. The old `sourceCardId` couldn't express a minion-sourced effect (a deathrattle has no card). Relies only on the session-unique-id assumption `targetId` already makes.
+3. **Fix the Lifesteal listener wording:** it read "`DamageTakenEvent` on self" (= *taking* damage — backwards); corrected to **caused by self** (`evt.sourceId == this minion`), mirroring Poisonous. Attribution is the field both filter on.
+4. **Accept dead-source active keywords don't fire:** a dead minion's deathrattle damage is still *attributed* to it (watchers/friend-enemy resolve correctly), but its Lifesteal/Poisonous don't trigger — those are listener-backed and the listeners were unsubscribed at Phase 1, before the deathrattle resolves in Phase 2. **Key distinction recorded: attribution (data on the event) ≠ keyword application (live listeners).** Falls out of the active-keyword model with no special-casing; logged to **Unaddressed Features** (snapshot-based application is the deferred path).
+
+Spell-damage stays consistent for free: a spell's `DealDamageAction` has `sourceId` = the spell card (cast-time bonus applies); non-spell source → `0` (Item 4, already structural).
+
+Spec amended: §3 `IEffect` (`EffectContext.sourceId` + new **Source Attribution** subsection), §3 Active-keyword table (Lifesteal corrected), **Unaddressed Features** (new entry: active keywords on a dead source).
+
+**Plan impact:**
+- **Epic 01 / `EffectContext` ticket** — field is `sourceId` (not `sourceCardId`); `EffectContext` built from the action's own source fields.
+- **Action-enqueue sites (Epics 08 triggers, effects)** — every enqueuer stamps `sourceId` = its host/source entity; trigger `OnFire` uses the host, never the upstream action's source. Add a scenario test: spell kills Yeti → Yeti's deathrattle `DealDamageAction.sourceId == Yeti`; a "when a friendly minion deals damage" watcher credits Yeti.
+- **Epic 08 / Lifesteal ticket** — listener filters on `evt.sourceId == self` (caused-by-self), not self-as-target. Add a test: Lifesteal minion attacking heals owner; the minion *taking* damage does not.
+- **Epic 08 / Lifesteal+Poisonous + death** — test that a dead minion's deathrattle damage does NOT lifesteal/poison (listeners gone), but the event's `sourceId` still names it.
+
 ---
 
 ## Item 10 — `IEffect` op `Results` ledger as a debugging / tooling target
@@ -252,6 +393,18 @@ If §3 `IEffect.Execute` writes nothing observable beyond events, a "why did thi
 
 **Open questions:** none for now.
 
+### ✅ DECISION (2026-06-01): REJECTED for v1 — both halves; the need is served by existing mechanisms, nothing is withheld
+
+(The recommendation's "defer / keep on radar" was incoherent on review — "deferred" and "rejected" can't both hold, and nothing is actually being withheld. Resolved cleanly as a reject. This also sharpens Item 4's loose "consistent with Item 10, already deferred" reference: read it as *rejected*.)
+
+- **(a) Gameplay op-result chaining** — rejected in Item 4, redirected to the event bus (`DamageTakenEvent` + an `ITrigger`). Need fully met.
+- **(b) Observability/tooling ledger** — also rejected. Debugging "why didn't the second effect fire?" is served by deterministically *replaying* the action with verbose tracing (Item 6 makes any action re-runnable; `StabilizationAbortReport` carries the repro inputs); a replay-viewer/card-preview tool would consume the event log, not a per-op ledger. No capability withheld.
+- **Why reject, not Unaddressed Feature:** that registry is for architectural can't-dos held open with a cost-to-enable (e.g. aura-granted active keywords vs the Item 3 invariant). This is the opposite — trivially *additive* anytime (`IEffect.Execute` stays `void`; just a cross-cutting tracer the engine could wrap around effect execution) and not *needed*. No blocker, no withheld capability → registering it would be noise. Built as ordinary additive tooling if a concrete need ever appears that replay can't serve.
+
+**Disposition test applied going forward:** need met by an existing mechanism / additive anytime → **reject** (decision note only); architecture can't do it without reopening a locked decision → **Unaddressed Features** (cost-to-enable + revisit trigger); real capability, no home yet but planned → **future-epic deferral**. Item 10 is the first.
+
+Spec amended: none. **Plan impact:** none.
+
 ---
 
 ## Item 11 — Game engine builder pattern
@@ -265,6 +418,15 @@ For tests, the scenario builder will need to construct an engine in many slightl
 **Recommendation: Keep on radar; let the test framework drive it.** Don't put a builder in the spec — that's an implementation detail. The scenario builder helpers from §11 of our plan (T1.7) will produce one organically.
 
 **Open questions:** none.
+
+### ✅ DECISION (2026-06-01): NOT A SPEC CONCERN — implementation detail; home = the plan's scenario builder (T1.7)
+
+- A builder/bootstrap is construction convenience, not a behavioral contract. By the Item 10 disposition test it's the "additive / met elsewhere" bucket → stays out of the spec. Recommendation adopted as-is; no open questions.
+- **Two construction paths, neither a spec concern:** *Production* — engine init seeds `rngSeed`, then runs setup as system actions (shuffle via Fisher-Yates over `IRandom`, coin flip, opening deal — §3 `IRandom` / Item 6); wiring/DI is a Game Server concern. *Tests* — the T1.7 scenario builder constructs arbitrary `GameState` directly for the Build step, bypassing init to reach specific mid-game states.
+
+Spec amended: none.
+
+**Plan impact:** T1.7's scenario builder grew over this pass — it must now set/handle `rngSeed` + `currentActionEpoch` (Items 6/3) and deterministic seed injection, optional deck-setup vs direct board construction, and the new per-minion fields: `intrinsicTribes`/`grantedTribes`/`auraTribes` (Item 8) and the 4-field keywords `intrinsicKeywords`/`grantedKeywords`/`auraKeywords` (Item 8 follow-on). Flag these in T1.7 so the builder exposes them ergonomically.
 
 ---
 
@@ -328,5 +490,9 @@ Pick one item at a time. For each: confirm whether it goes into the spec, into t
 After all 13 items are walked through, before implementation begins at Epic 01 / T1.1:
 
 1. Walk every `Plan impact:` list in this file and apply the edits to the corresponding epic/ticket files under `docs/superpowers/plans/2026-05-27-ccg-game-logic/`.
-2. **Create new tickets / epics where flagged.** The amendments have already surfaced needs the original plan didn't cover — e.g. `StabilizationAbortReport` telemetry (Item 1 → new Epic 04 T4.8) and the `ITriggerCondition` library as its own unit (Item 2 → new Epic 08 T8.10). Remaining items may add more (e.g. Item 6 `IRandom` likely wants a foundation ticket; Item 5 `GetLegalActions`, Item 7 structured error codes, Item 12 targeting registry may each need their own). Do not force everything into existing tickets — add tickets/epics freely so each finalized amendment has a home, and update the README index + ticket outline + writing-progress tracker to match.
+2. **Create new tickets / epics where flagged.** The amendments have already surfaced needs the original plan didn't cover — known so far:
+   - `StabilizationAbortReport` telemetry (Item 1 → new Epic 04 **T4.8**).
+   - `ITriggerCondition` library as its own unit (Item 2 → new Epic 08 **T8.10**).
+   - **NEW EPIC: Bot Support** (Item 5 → end of plan) — houses `GetLegalActions(playerId)` (brute-force-then-filter, library-resident, phase-aware; first ticket) **plus other bot-building logic** (move generation/scoring, state evaluation, bot driver loop — flesh out when writing the epic). Depends only on the Item 5 ②③-predicate seam (Epic 01 validator ticket).
+   Remaining items may add more (e.g. Item 6 `IRandom` likely wants a foundation ticket; Item 7 structured error codes, Item 12 targeting registry may each need their own). Do not force everything into existing tickets — add tickets/epics freely so each finalized amendment has a home, and update the README index + ticket outline + writing-progress tracker to match.
 3. Re-verify the README's "Resume point" line and epic index reflect the reconciled plan.
