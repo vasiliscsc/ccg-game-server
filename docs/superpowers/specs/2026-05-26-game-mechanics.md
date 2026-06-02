@@ -381,7 +381,7 @@ The pure validation predicate (§4 ③) returns `Ok | Rejection` using this same
 
 ## Section 3: Engine Architecture
 
-A small set of interfaces forms the engine: the **extensibility layer** (`IKeyword`, `IEffect`, `ITrigger` with its `ITriggerCondition`, `IAura`, `ICardHandler`) plus the **infrastructure backbone** (`IActionHandler`, `IEventBus`, `IActionQueue`, `IRandom`).
+A small set of interfaces forms the engine: the **extensibility layer** (`IKeyword`, `IEffect`, `ITrigger` with its `ITriggerCondition`, `ITargetSelector`, `IAura`, `ICardHandler`) plus the **infrastructure backbone** (`IActionHandler`, `IEventBus`, `IActionQueue`, `IRandom`).
 
 ### `IActionHandler<TAction>`
 
@@ -565,6 +565,36 @@ So Battlecry and Deathrattle use the same `{ type, condition, effect }` shape an
 
 **JSON encoding** of the condition tree (the `{ "all": [...] }` / `{ "minionType": "…" }` shapes above) is a `DefaultCardHandler` implementation detail, *not* part of this spec — it settles when the first compound card is authored.
 
+### `ITargetSelector`
+
+The **dual of `ITriggerCondition`**: a condition filters *events*, a selector produces *entities*. It is the single targeting primitive — one library answers "which entities does this effect act on?", "which targets may the player legally pick?", and "what are the options in a Discover/mid-effect choice?" There is no separate target-requirement taxonomy; legality is membership in a selector's output (below).
+
+```csharp
+interface ITargetSelector {
+    EntityId[] Select(EffectContext context);  // pure; ordered; 0..N entities
+}
+```
+
+`Select` is a **pure function of `GameState`** (read via the context) — no mutation, no RNG, no enqueueing. Like the condition library it evaluates *relative to* the source: "enemy" means "opponent of `context.sourcePlayerId`".
+
+**Singletons — parameterless** (referenced by reference, no per-call allocation): `AllEnemyMinions`, `AllFriendlyMinions`, `AllMinions`, `EnemyHero`, `FriendlyHero`, `AllEnemyCharacters`, `AllFriendlyCharacters`, `Self`.
+
+**Factories — parameterized:** `AdjacentTo(id)`, `MinionsWithTribe(Tribe)`, `MinionsWithKeyword(string)`, `OtherThan(selector, id)`, `Union(s1, s2, …)`, `Filter(selector, ITriggerCondition)` (reuse the condition library as the entity predicate — e.g. *"all damaged friendly minions"* = `Filter(AllFriendlyMinions, IsDamaged)`).
+
+**Ordering.** The returned list is **ordered by the canonical board order** already locked for death/trigger resolution (§4 ⑦): current player `board[0..n]` → opponent `board[0..n]` → neutral zone by index, with heroes slotted by the selector's own definition. Ordered, not unordered, because sequential application (damage → interleaved death checks) is order-sensitive and determinism demands a fixed order. Selectors never invent a second ordering.
+
+**Three consumption modes** — a selector's candidate set covers every targeting feature with no new mechanism:
+
+| Mode | How the effect consumes `Select(context)` |
+|---|---|
+| **Auto-hit** (AoE) | Enqueue one concrete action per entity, in returned order — e.g. Flamestrike enqueues a `DealDamageAction` per `AllEnemyMinions` entry. Pure: no RNG. |
+| **Random-K** | Enqueue **one** action carrying the *pool* (the selector's output) + `k`; the **stage-④ handler draws K** using that action's epoch-derived `IRandom`. Selectors stay pure — randomness is consumed only at ④, preserving the Item-6 invariant verbatim and keeping each draw attributable to one action's epoch (clean for the `StabilizationAbortReport`). |
+| **Player-choice** (Discover, mid-effect targeting) | Issue `StartChoiceAction` with `options =` the candidate set → existing `PendingChoice` (§4). The selector *feeds* the choice; it does not subsume it — "compute targets" and "interrupt for player input" stay separate concerns. |
+
+**Player-target legality is unified into the same primitive.** A card/effect requiring a player-supplied target declares a `(selector, cardinality)` pair. The §4 ③ validator's *"is a legal target type for this card"* check is then exactly: **`chosen ∈ selector.Select(context)`** (plus the cardinality/optionality rule) → `InvalidTarget` otherwise. The *same* `AllEnemyMinions` selector that an AoE uses to hit every enemy is what a single-target spell uses to define its legal targets — so previewed legality (client highlighting), validation, and effect resolution can never disagree. This replaces the spec's earlier hand-wave with one source of truth (parallel to how §4 ③ made the validator the single source of truth for action legality).
+
+**JSON encoding** of selector references in card definitions is a `DefaultCardHandler` detail, *not* part of this spec — same treatment as the condition tree.
+
 ### `IAura`
 
 Continuous effects recalculated after every board-affecting action. Aura bonuses are **never** stored in `enchantments` — they live in `auraAttackBonus`/`auraHealthBonus` and are fully rewritten on every recalculation pass.
@@ -620,11 +650,16 @@ interface IRandom {
 
 **Per-action derivation (counter-based).** There is **no single long-lived PRNG** advanced across the match. Instead, at the start of each action's stage ④ the engine derives a *fresh* `IRandom` for that action from `mix(rngSeed, currentActionEpoch)` via a strong mixing function (e.g. splitmix64, so adjacent epochs yield uncorrelated streams). The handler draws from that instance as many times as it needs; draw order within the action is fixed by the deterministic pipeline ordering (below). Consequence: **any single action is independently reproducible from `(rngSeed, currentActionEpoch, preActionState)` alone** — no PRNG internal state is ever serialized. That is what makes `StabilizationAbortReport` self-contained (its `preActionState` snapshot already carries `currentActionEpoch`), and it reuses the very `currentActionEpoch` introduced for event visibility (§3 `IEventBus`). This is the counter-based / splittable-RNG model (cf. JAX key-split, NumPy `SeedSequence.spawn`, Slay the Spire's per-domain streams), chosen over a single advancing stream precisely so a mid-game slice can be reproduced without serializing RNG state.
 
-**Where randomness is consumed.** Only inside action handlers (stage ④), the sole state-mutation point. An effect or trigger that needs a random outcome enqueues an action whose handler does the roll — e.g. `DiscardCardAction { cardId = null }` picks the discard via `IRandom`; Discover generates its options; a "random enemy minion" action resolves its target. (Whether target *selectors* receive `IRandom` via `EffectContext` is deferred to Item 12 — targeting registry.)
+**Where randomness is consumed.** Only inside action handlers (stage ④), the sole state-mutation point. An effect or trigger that needs a random outcome enqueues an action whose handler does the roll — e.g. `DiscardCardAction { cardId = null }` picks the discard via `IRandom`; Discover generates its options; a "random enemy minion" action resolves its target. (Target *selectors* are **pure and do not receive `IRandom`** — see §3 `ITargetSelector`. A random-target effect enqueues a single action carrying the selector's *pool*; the stage-④ handler draws K from it with that action's `IRandom`. So random target resolution is, like every other roll, a stage-④ concern.)
 
 **Deck shuffle (at init).** The opening shuffle runs inside the engine at match setup as a Fisher-Yates over `IRandom`, seeded from the match seed like any other action. **Decklists are the stored input; the shuffled order regenerates from `rngSeed`.** The coin flip (first player) and opening-hand deal are seeded the same way.
 
-**Replay.** A full game replays from **`rngSeed` + both decklists + the ordered log of player actions**. System actions, random rolls, and the entire event cascade regenerate deterministically; `currentActionEpoch` reconstructs itself by counting actions, so it need not be stored in the log. (A mid-game *slice* repro such as the abort report does not replay from the start, so it relies on `currentActionEpoch` being carried in the captured `GameState`.)
+**Replay.** The engine is a **deterministic function of `(rngSeed, ruleset version, decklists, ordered input log)`**. System actions, random rolls, and the entire event cascade regenerate; `currentActionEpoch` reconstructs itself by counting actions, so it need not be stored. (A mid-game *slice* repro such as the abort report does not replay from the start, so it relies on `currentActionEpoch` being carried in the captured `GameState`.) Four points make this precise:
+
+- **An *input* is anything submitted via `Submit`** — not only deliberate player moves but also **timeout / forfeit / disconnect-injected actions** (auto-`EndTurn`, auto-skip, auto-resolve a `PendingChoice`). These are *external nondeterminism* — they depend on wall-clock time, not game state, so they are **not** regenerable and **must** appear in the input log like any other action. (The timer that injects them is a Game Server concern; GameLogic only requires that they enter through the same `Submit` seam and are logged.) "Player actions only" would be subtly wrong the first time a turn times out.
+- **Single, total-order input stream** — one sequence per game, not per-player. The engine processes inputs in a single total order; per-player streams would reintroduce interleaving ambiguity.
+- **Ruleset-version pinning** — a command-log replay re-runs engine logic + card `definition` JSON, so it is only valid against the **same engine + card-definition version** it was recorded under (the classic command-log-replay fragility across patches). The replay package carries a ruleset/content version stamp.
+- **Command log vs. event log — two artifacts, two jobs.** The **command/input log is canonical**: compact, re-simulatable, the source of truth (but version-fragile per above). The **event log is the client wire format**, spectator/late-join stream, and version-robust archive: self-contained state deltas the client renders with **no game logic**, but *not* re-simulatable. The asymmetry: the **event log is derivable from the command log + seed, never the reverse** (events record outcomes, not the inputs/rolls that produced them) — so the command log is the richer artifact and the event log the safer/self-contained one.
 
 ### Deterministic Ordering
 
@@ -669,7 +704,7 @@ Precondition checks. Returns `Rejected(ActionRejection)` with the matching code 
 
 - Turn ownership: is this the active player? → `NotActivePlayer`
 - Mana affordability: `effectiveCost ≤ player.mana` → `NotEnoughMana`
-- Target validity: target is alive, is not stealthed (for opponent spells/attacks), is a legal target type for this card → `InvalidTarget` / `TargetStealthed`
+- Target validity: target is alive, is not stealthed (for opponent spells/attacks), and is a **member of the card/effect's declared target selector's output** (`chosen ∈ selector.Select(context)`, plus the cardinality/optionality rule — see §3 `ITargetSelector`) → `InvalidTarget` / `TargetStealthed`. The same selector defines the client's legal-target highlighting, so preview and validation cannot drift.
 - Taunt enforcement: if opponent has Taunt minions on board, attacks must target one of them → `MustTargetTaunt`
 - Attack eligibility: `canAttack = true` (else `AttackerCannotAttack`), `isFrozen = false` (else `AttackerFrozen`), `attacksUsedThisTurn < attacksAllowedThisTurn` (else `AttackerExhausted`)
 - Board space: player board has fewer than 7 minions before summoning → `BoardFull`

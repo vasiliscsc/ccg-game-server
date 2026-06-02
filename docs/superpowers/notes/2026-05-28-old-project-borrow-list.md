@@ -451,6 +451,36 @@ interface ITargetSelector {
 - Selectors that need RNG access — do they receive `IRandom` via `EffectContext`?
 - Should multi-target selectors return an ordered or unordered list?
 
+### ✅ DECISION (2026-06-02): ADOPTED — one pure selector primitive, dual of `ITriggerCondition`; random draw stays at stage ④
+
+Targeting was genuinely unspecified in **two** different places, and the decision unifies them under a single primitive rather than the note's narrower "registry replacing a switch":
+
+1. **Player-chosen targets** — the §4 ③ validator's *"is a legal target type for this card"* was a hand-wave with no backing model.
+2. **Effect-computed targets** — "all enemy minions", "random enemy", "adjacent" — the effect must *produce* a set the player never supplied (Item 6 parked where the *random* ones resolve).
+
+**`ITargetSelector` adopted in spec §3** (placed immediately after `ITriggerCondition`, as its dual — a condition filters *events*, a selector produces *entities*):
+
+```csharp
+interface ITargetSelector { EntityId[] Select(EffectContext context); }  // pure, ordered, 0..N
+```
+
+- **Pure function of `GameState`** — no mutation, no RNG, no enqueue. Mirrors the condition library's shape: parameterless singletons (`AllEnemyMinions`, `EnemyHero`, `Self`, …) + parameterized factories (`AdjacentTo(id)`, `MinionsWithTribe(Tribe)`, `Union(…)`, `Filter(selector, ITriggerCondition)` — reusing the condition library as an entity predicate).
+- **Ordered** (note's open Q resolved → ordered): reuses the **canonical board order already locked for §4 ⑦** (current player L→R → opponent → neutral), because sequential application is order-sensitive and determinism needs a fixed order. No second ordering invented.
+- **Three consumption modes** cover every locked targeting feature with no new mechanism: **(a) auto-hit** (AoE — one concrete action per entity), **(b) random-K** (effect enqueues a single *pool-carrying* action; the **stage-④ handler draws K** with that action's epoch-derived `IRandom`), **(c) player-choice** (effect issues the existing `StartChoiceAction` with `options =` candidate set → `PendingChoice`; selector *feeds* the choice, does not subsume it).
+- **Player-target legality unified into the same primitive** — a card declares `(selector, cardinality)`; §4 ③ validity check becomes `chosen ∈ selector.Select(context)` (+ cardinality). The *same* `AllEnemyMinions` an AoE hits-all with is what a single-target spell uses to define legal targets → client highlighting, validation, and resolution can never drift. **No separate `TargetRequirement` taxonomy** (the leaner "more structure / fewer concepts" outcome — parallels §4 ③ making the validator the single source of truth for action legality).
+
+**Open question #1 resolved (RNG / the Item-6 parked question) → Fork A: selectors are pure and do NOT receive `IRandom`.** Random target resolution is a stage-④ concern like every other roll: the effect computes the pool purely; the handler draws K at ④. This keeps Item 6's "RNG consumed only at ④" invariant **verbatim**, keeps each draw attributable to one action's epoch (clean for the `StabilizationAbortReport`), and keeps selectors trivially unit-testable (no RNG mock). The leaner Fork B (`IRandom` in `EffectContext`, selector rolls end-to-end at ⑤) was rejected — it would have relaxed the Item-6 invariant for marginal call-site brevity.
+
+**Note's `TargetSelection = Immediate | RequiresChoice` union — rejected.** Player-choice stays entirely in the existing `PendingChoice`/`StartChoiceAction` mechanism; folding a `RequiresChoice` variant into the selector return type would blur "compute targets" with "interrupt for player input." A selector only ever returns `EntityId[]`.
+
+**Spec amendments:** §3 new `### ITargetSelector` section; §3 extensibility-layer interface list gains `ITargetSelector`; §4 ③ target-validity bullet rewritten to selector membership; §3 `IRandom` note (the Item-6 deferral) rewritten to point here. The illustrative §2B action catalog is left as-is (concrete pool-carrying actions like `DealDamageToRandomAction` are plan/implementation detail).
+
+**Plan impact:**
+- **New Epic 08 ticket (`ITargetSelector` library)** — alongside the already-flagged T8.10 `ITriggerCondition` library; same shape (singletons + factories + `Filter` reusing conditions), pure, ordered by §4 ⑦ board order. Scenario tests: `AllEnemyMinions` ordering, `Filter(AllFriendlyMinions, IsDamaged)`, `AdjacentTo`, `Union`, empty-set.
+- **Effect/action tickets (Epic ~07/08)** — random-K effects use the **pool-carrying-action + stage-④ draw** pattern (one action per random group, not one per pre-rolled target). Add a `DealDamageToRandomAction`-style handler test that asserts the draw is reproducible from `(seed, epoch)`.
+- **Validation ticket (Epic ~05/06, §4 ③)** — `InvalidTarget` check implemented as selector membership; the *same* selector serves the future `GetLegalActions` bot enumerator (Item 5) and client preview. The standalone validator predicate (Item 5) now depends on the selector library.
+- **`PlayCardAction`/`UseHeroPowerAction` card definitions** carry a `(selector, cardinality)` target requirement; reconcile with whatever effect-definition ticket owns the card `definition` JSON schema.
+
 ---
 
 ## Item 13 — Command-log replay vs. event-log replay
@@ -465,6 +495,25 @@ The plan's Epic 16 backlog mentions "Event-log replay — reconstruct GameState 
 
 **Open questions:**
 - Single sequence per game, or per-player streams? Single is simpler.
+
+### ✅ DECISION (2026-06-02): ADOPTED — confirms Item 6's model + tightens the spec's Replay paragraph with three gaps
+
+The core was **already locked by Item 6** (spec §3 `IRandom` Replay paragraph + determinism contract). Item 13 confirms it and closes three gaps a review of that paragraph against the locked feature set surfaced — two of them genuine **correctness** fixes, not nits. **Spec §3 Replay paragraph rewritten** (the disposition is *tighten spec now*, not plan-only) to state the engine as a deterministic function of `(rngSeed, ruleset version, decklists, ordered input log)`, with four clarifications:
+
+1. **An *input* = anything submitted via `Submit`, including timeout / forfeit / disconnect-injected actions** (auto-`EndTurn`, auto-skip, auto-resolve a `PendingChoice`). These are *external nondeterminism* (wall-clock-dependent, not state-derivable) so they must be logged like any other action — Item 6's "player actions only" wording was subtly wrong the first time a turn times out. **The timer that injects them is a Game Server concern**; GameLogic only requires they enter via the same `Submit` seam and are logged. *(Correctness fix.)*
+2. **Ruleset-version pinning** — a command-log replay re-runs engine logic + card `definition` JSON, so it is valid only against the **same engine + card-definition version** (the classic command-log-replay-fragility-across-patches problem; cf. StarCraft/AoE). The replay package carries a version stamp. *(Correctness fix — was entirely unstated.)*
+3. **Command log vs. event log — two artifacts, two jobs** (the note's actual question, now with the *why*): **command/input log = canonical** (compact, re-simulatable, source of truth, but version-fragile); **event log = client wire format + spectator/late-join stream + version-robust archive** (self-contained deltas, no game logic needed to render, but *not* re-simulatable). Asymmetry: **event log is derivable from command log + seed, never the reverse** (events record outcomes, not the inputs/rolls). So we keep both — exactly the note's pre-decision.
+4. **Single, total-order input stream** (note's open question resolved) — one sequence per game, not per-player; per-player streams would reintroduce interleaving ambiguity.
+
+No rejection, nothing for Unaddressed Features. Disposition test outcome: **SPEC (tighten) + Plan-impact**.
+
+**Plan impact:**
+- **Epic 16 backlog** — the existing "Event-log replay" item stays as the **client-facing / spectator** path; **add a command/input-log canonical-replay item** alongside it (compact replay package = `rngSeed` + ruleset version + decklists + input log). Note the asymmetry (event log derivable from command log, not vice versa) so they aren't built as redundant.
+- **Input-log capture** — wherever `Submit` lives (Epic 01 engine ticket), note that the canonical input log records **every** `Submit`-ed action including timeout/forfeit/disconnect-injected ones; do not log system actions, rolls, or epochs (they regenerate). This is the same log the abort report's `triggeringAction` is drawn from.
+- **Ruleset-version stamp** — the replay package and (later) the Game Server's match record carry an engine + card-definition version; flag for the Game Server spec (timer/timeout injection + version stamping are its concerns).
+- **Determinism audit ticket** (Epic 16 "Determinism/RNG audit") — extend its checklist to assert *no wall-clock / no ambient nondeterminism in handlers* (already the §3 `IRandom` contract) so command-log replay stays bit-exact.
+
+**This completes the borrow-list pass (Items 1–13 all resolved). Next: the end-of-pass plan reconciliation below, then implementation at Epic 01 / T1.1.**
 
 ---
 
@@ -494,5 +543,10 @@ After all 13 items are walked through, before implementation begins at Epic 01 /
    - `StabilizationAbortReport` telemetry (Item 1 → new Epic 04 **T4.8**).
    - `ITriggerCondition` library as its own unit (Item 2 → new Epic 08 **T8.10**).
    - **NEW EPIC: Bot Support** (Item 5 → end of plan) — houses `GetLegalActions(playerId)` (brute-force-then-filter, library-resident, phase-aware; first ticket) **plus other bot-building logic** (move generation/scoring, state evaluation, bot driver loop — flesh out when writing the epic). Depends only on the Item 5 ②③-predicate seam (Epic 01 validator ticket).
-   Remaining items may add more (e.g. Item 6 `IRandom` likely wants a foundation ticket; Item 7 structured error codes, Item 12 targeting registry may each need their own). Do not force everything into existing tickets — add tickets/epics freely so each finalized amendment has a home, and update the README index + ticket outline + writing-progress tracker to match.
+   - `IRandom` foundation (Item 6 → Epic 01) — counter-based per-action reseed `mix(rngSeed, currentActionEpoch)`, `GameState.rngSeed`, init shuffle/coin/deal via Fisher-Yates; the Epic 16 "Determinism/RNG audit" backlog item references it.
+   - Structured error codes (Item 7 → Epic 01/validator) — `ActionRejectionCode` enum + `ActionRejection(Code, Detail?)`, `Submit` returns `SubmitResult = Accepted | Rejected`.
+   - Tribe/keyword 4-field model (Item 8 + follow-on → data-model + auras tickets) — `Tribe [Flags]` enum, `intrinsic/granted/aura` fields for tribes *and* keywords, `AuraEffect.GrantedTribes`/`GrantedKeywords`, Silence asymmetry.
+   - `ITargetSelector` library (Item 12 → **new Epic 08 ticket**, beside T8.10 `ITriggerCondition`) — pure, ordered by §4 ⑦ board order, singletons + factories + `Filter`(reuses conditions); random-K effects use the pool-carrying-action + stage-④ draw pattern; the §4 ③ validator's target check becomes selector-membership (so the validator ticket depends on this library); `PlayCard`/`HeroPower` card definitions carry a `(selector, cardinality)` target requirement.
+   - Replay artifacts (Item 13 → Epic 16) — keep "Event-log replay" (client/spectator path) and **add a command/input-log canonical-replay item** (package = `rngSeed` + ruleset version + decklists + input log; input log captures every `Submit`-ed action incl. timeout/forfeit/disconnect-injected ones); ruleset-version stamp flagged for the Game Server spec.
+   Do not force everything into existing tickets — add tickets/epics freely so each finalized amendment has a home, and update the README index + ticket outline + writing-progress tracker to match.
 3. Re-verify the README's "Resume point" line and epic index reflect the reconciled plan.
