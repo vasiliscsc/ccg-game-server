@@ -345,6 +345,30 @@ Prompted by a user consistency question (tribes got 4 fields — `intrinsic`/`gr
 - **Aura ticket** — `AuraEffect.GrantedKeywords` (declarative-only); recalc rewrites `auraKeywords`; assert active keywords are rejected/ignored from aura grants.
 - **Epic 08 / Spell Damage** — aura path targets `auraKeywords` (Item 4 correction).
 
+#### Follow-on amendment (2026-06-02): active/declarative split COLLAPSED — keyword model unified, both Unaddressed-Features walls dissolved
+
+Prompted by a Fireplace-comparison question (where does our spec diverge from the open-source HS clone on shared subsystems?). The comparison exposed that **Fireplace has no active/declarative keyword split** — every keyword is a declarative tag whose behaviour is read *inline* in the relevant action (e.g. `Damage.do` handles lifesteal/poisonous), with **no event-bus listeners**. Reviewing our "active" keywords against that, **every one reduces to a read/hook at the minion's *own* action moment**, so the listener category — and both walls it produced — is eliminable:
+
+| "Active" keyword | Own-moment | Becomes |
+|---|---|---|
+| Lifesteal / Poisonous | my deal-damage | role-interface hook `IOnDealtDamage`, invoked by `DealDamageAction` over the source's **effective** keywords |
+| Windfury | my attack-eligibility | declarative read (`windfury ? 2 : 1`) |
+| Enrage | my stat recompute | conditional buff in the stage-⑥ pass (driven by `isDamaged`) |
+| Freeze | end-of-turn | already a turn-lifecycle sweep — no per-minion listener |
+
+- **The real cut isn't active-vs-declarative; it's keyword-vs-trigger.** **Keyword** = behaviour at the minion's own action moments (pulled from declarative effective state by the relevant ④ handler). **Trigger** (`ITrigger`) = reaction to board-wide events (bus subscription + epoch filter). The `IEventBus` epoch machinery stays, now used *only* by `ITrigger`.
+- **Scattering avoided via role interfaces.** A keyword that enqueues a follow-on action implements a hook interface (`IOnDealtDamage`, …); the owning handler does `EffectiveKeywords(source).OfType<IOnDealtDamage>()` — new keyword = new class, handler iterates by interface, never a central switch (unlike Fireplace's `Damage.do`). Cohesion + open-closed preserved, zero subscriptions.
+- **Both Unaddressed Features dissolve.** *Aura-granted active keywords*: gone entirely — hooks read the effective view (which includes `auraKeywords`), so aura-granted Lifesteal just works; aura grants are now **unrestricted** (the `AuraEffect.GrantedKeywords` "declarative-only" constraint is dropped). *Active keywords on a dead source*: reframed (not a listener-lifecycle artifact; a dead source is off-board so `EffectiveKeywords` is empty) — kept as the one remaining Unaddressed entry, enable-path = a death-snapshot keyword fallback.
+- **`IKeyword` interface change:** drop `OnApplied`/`OnRemoved` (no subscribe). `IKeyword { KeywordId }` + opt-in role hooks. Reverses the prior bullet's "active keywords cannot be aura-granted" and the §3 active-keyword listener table.
+
+**Spec amended (2026-06-02):** §3 `IKeyword` rewritten (declarative markers + inline-read table + role-hook model); §3 `IEventBus` invariant (keywords don't subscribe; bus = `ITrigger` only); §3 Source Attribution dead-source note (effective-view framing); Unaddressed Features (aura-grant entry removed, dead-source entry reframed).
+
+**Plan impact (supersedes the active-keyword bits above):**
+- **Aura ticket** — drop "assert active keywords rejected from aura grants"; `AuraEffect.GrantedKeywords` accepts **any** keyword; recalc rewrites `auraKeywords` for all.
+- **Epic 07 (active keywords)** — re-scope from "register listeners on summon/apply" to: implement Lifesteal/Poisonous as `IOnDealtDamage` hooks invoked by `DealDamageAction`; Windfury as a declarative attack-eligibility read; Enrage as a stage-⑥ recompute participant; Freeze via the existing turn-lifecycle sweep. No `IKeyword.OnApplied`/`OnRemoved`, no bus subscriptions.
+- **Epic 01 / `IKeyword`** — `IKeyword { KeywordId }` + role-hook interfaces (`IOnDealtDamage` for v1); add new hook interfaces as cards require new own-moment points.
+- **Test scenarios** — aura-granted Lifesteal heals; aura-granted Poisonous destroys; aura loss removes both immediately (recompute); dead-source Deathrattle damage does NOT lifesteal (effective view empty).
+
 ---
 
 ## Item 9 — `PlayContext → EffectContext` conversion / nested contexts
@@ -546,6 +570,7 @@ After all 13 items are walked through, before implementation begins at Epic 01 /
    - `IRandom` foundation (Item 6 → Epic 01) — counter-based per-action reseed `mix(rngSeed, currentActionEpoch)`, `GameState.rngSeed`, init shuffle/coin/deal via Fisher-Yates; the Epic 16 "Determinism/RNG audit" backlog item references it.
    - Structured error codes (Item 7 → Epic 01/validator) — `ActionRejectionCode` enum + `ActionRejection(Code, Detail?)`, `Submit` returns `SubmitResult = Accepted | Rejected`.
    - Tribe/keyword 4-field model (Item 8 + follow-on → data-model + auras tickets) — `Tribe [Flags]` enum, `intrinsic/granted/aura` fields for tribes *and* keywords, `AuraEffect.GrantedTribes`/`GrantedKeywords`, Silence asymmetry.
+   - **Keyword-model collapse (Item 8 second follow-on, 2026-06-02 → Epic 01 `IKeyword` + Epic 07)** — `IKeyword { KeywordId }` + role hooks (`IOnDealtDamage`), NO `OnApplied`/`OnRemoved`/bus subscriptions; Epic 07 re-scoped (Lifesteal/Poisonous = hooks, Windfury = declarative read, Enrage = ⑥ recompute, Freeze = turn sweep); aura grants accept any keyword (drop the declarative-only assert); bus carries only `ITrigger`.
    - `ITargetSelector` library (Item 12 → **new Epic 08 ticket**, beside T8.10 `ITriggerCondition`) — pure, ordered by §4 ⑦ board order, singletons + factories + `Filter`(reuses conditions); random-K effects use the pool-carrying-action + stage-④ draw pattern; the §4 ③ validator's target check becomes selector-membership (so the validator ticket depends on this library); `PlayCard`/`HeroPower` card definitions carry a `(selector, cardinality)` target requirement.
    - Replay artifacts (Item 13 → Epic 16) — keep "Event-log replay" (client/spectator path) and **add a command/input-log canonical-replay item** (package = `rngSeed` + ruleset version + decklists + input log; input log captures every `Submit`-ed action incl. timeout/forfeit/disconnect-injected ones); ruleset-version stamp flagged for the Game Server spec.
    Do not force everything into existing tickets — add tickets/epics freely so each finalized amendment has a home, and update the README index + ticket outline + writing-progress tracker to match.

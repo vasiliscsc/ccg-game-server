@@ -414,7 +414,7 @@ interface IEventBus {
 
 Consequences: a listener receives only events from actions *strictly later* than the action that created it. Events already in flight from earlier actions are missed (the listener did not exist when they published); events from the *same* action — including the listener's own creation event and any sibling events — are excluded by the equal-epoch comparison; every subsequent action's events are received. This reproduces Hearthstone's rule (a freshly summoned or transformed minion does not trigger off the event that introduced it) **uniformly for every entity-introducing event**, with no per-event special-casing. Because the filter is a pointwise integer comparison against the *live* list, removed (unsubscribed) listeners are simply absent — there is no stale frozen list that could fire.
 
-**Invariant — subscriptions happen only inside action handlers.** Every bus subscription occurs during stage ④ (`ICardHandler.OnSummon`, `IKeyword.OnApplied`), so every listener has a well-defined `birthEpoch`. Nothing subscribes during event publication (⑤) or aura recalculation (⑥). This invariant is what makes the epoch comparison total.
+**Invariant — subscriptions happen only inside action handlers.** Every bus subscription occurs during stage ④ (`ICardHandler.OnSummon` registering this card's `ITrigger`s), so every listener has a well-defined `birthEpoch`. Nothing subscribes during event publication (⑤) or aura recalculation (⑥). This invariant is what makes the epoch comparison total. (Keywords do **not** subscribe — their behaviour is pulled at stage ④, see §3 `IKeyword` — so the bus carries only `ITrigger` subscriptions.)
 
 ### `IActionQueue`
 
@@ -429,30 +429,49 @@ interface IActionQueue {
 
 ### `IKeyword`
 
-One implementation per keyword. Applied/removed as strings in `MinionOnBoard.keywords`; resolved to the corresponding `IKeyword` instance at runtime.
+Keywords are **declarative markers** on a minion's effective `keywords` view (intrinsic | granted | aura — see `MinionOnBoard`). A keyword **never subscribes to the event bus**; its behaviour is *pulled* at the minion's own action moments. This is the deliberate cut between the two extensibility points:
+
+> **Keyword** — behaviour at the minion's *own* action moments (deal / take damage, attack, summon, stat recompute), read from declarative state and pulled by the relevant stage-④ handler.
+> **Trigger** (`ITrigger`) — reaction to *board-wide* events, via a bus subscription with the creation-epoch filter.
+
+Because keyword behaviour is always pulled from the **effective** view at the moment of use, **aura-granted keywords behave identically to intrinsic ones** (the aura contributes to `auraKeywords`, which is in the effective view), and a keyword on a minion that has left the board is simply never read. There is no subscription lifecycle and no registration-during-recalc problem — which is why aura grants are unrestricted (any keyword, not just "declarative" ones) and the epoch filter (§3 `IEventBus`) is needed only by `ITrigger`.
+
+Behaviour attaches two ways.
+
+**1. Inline reads** — most keywords are queried from the effective view at one decision point:
+
+| Keyword | Read at |
+|---|---|
+| Taunt | attack validation (§4 ③ — opponent must attack a Taunt minion) |
+| Stealth | targeting validation (cannot be targeted by the opponent) |
+| Charge / Rush | summon-turn attack eligibility (`canAttack`) |
+| Windfury | `attacksAllowedThisTurn = keywords has windfury ? 2 : 1`, read at attack eligibility |
+| Divine Shield | consumed inside `DealDamageAction`: if target has it → remove it, publish `DivineShieldBrokenEvent`, apply no damage |
+| Spell Damage +X | *pulled* and aggregated at spell-resolution start (`EffectContext.SpellDamageBonus`); magnitude in the keyword string (`spell_damage:1`) |
+| Reborn | read by `DeathResolutionService` Phase 3 (`keywords has reborn && rebornAvailable`); firing consumes `rebornAvailable`, the keyword persists (counts for auras, survives bounce/copy) |
+| Enrage | a conditional buff recomputed in the stage-⑥ aura/stat pass from `isDamaged` (not an event reaction) |
+
+**2. Role-interface hooks** — a keyword whose behaviour *enqueues a follow-on action* at a specific moment implements a small hook interface. The owning action handler iterates the acting minion's **effective** keywords implementing that interface and invokes each — no subscription, all inside stage ④:
 
 ```csharp
-interface IKeyword {
-    string KeywordId { get; }
-    void OnApplied(string minionId, IEventBus bus, IActionQueue queue);
-    void OnRemoved(string minionId, IEventBus bus);
+interface IKeyword { string KeywordId { get; } }
+
+// Invoked by DealDamageAction over the SOURCE's effective keywords, after damage applies.
+interface IOnDealtDamage : IKeyword {
+    void OnDealtDamage(string sourceId, string targetId, int amount,
+                       GameState state, IActionQueue queue);
 }
 ```
 
-**Declarative keywords** (Taunt, Divine Shield, Stealth, Charge, Rush, **Spell Damage +X**) have no-op `OnApplied`/`OnRemoved` — the pipeline queries their presence by string. Divine Shield is handled inside the `DealDamageAction` handler: if target has `divine_shield`, the keyword is removed, `DivineShieldBrokenEvent` is published, and no damage is applied.
+v1 hooks (`IOnDealtDamage`): **Lifesteal** → enqueue `HealAction` for the source's owner; **Poisonous** → enqueue `DestroyMinionAction` on a damaged enemy minion. The handler:
 
-**Spell Damage +X** carries a magnitude in the keyword string (`spell_damage:1`); it registers **no listener**. The bonus is *pulled* — aggregated on demand at spell-resolution start (see `EffectContext.SpellDamageBonus` below), not pushed reactively. This keeps the math in one place and makes it structurally impossible for the bonus to leak into combat or hero-power damage. A Spell-Power aura grants `spell_damage:X` into the target minion's `auraKeywords` (rewritten each recalc pass; `spell_damage` is declarative, so this is allowed — see `MinionOnBoard` keyword fields and "Unaddressed Features"), so aura-granted and intrinsic spell power flow through the same aggregation via the effective `keywords` view.
+```csharp
+ApplyDamage(target, amount);
+foreach (var kw in EffectiveKeywords(source).OfType<IOnDealtDamage>())
+    kw.OnDealtDamage(source, target, amount, state, queue);
+```
 
-**Active keywords** register event bus listeners:
-
-| Keyword | Listener behaviour |
-|---|---|
-| Lifesteal | `DamageTakenEvent` **caused by self** (`evt.sourceId == this minion`) → enqueues `HealAction` for owner |
-| Poisonous | `DamageTakenEvent` on target caused by this minion → enqueues `DestroyMinionAction` |
-| Windfury | `MinionSummonedEvent` on self → sets `attacksAllowedThisTurn = 2` |
-| Reborn | No listener — `DeathResolutionService` reads `keywords.Contains("reborn") && rebornAvailable` directly in Phase 3. Firing consumes `rebornAvailable` only; the keyword persists (still counts for auras, survives bounce/copy). |
-| Enrage | `DamageTakenEvent` + `HealedEvent` on self → enqueues stat update if `isDamaged` changed |
-| Freeze | `FreezeTargetAction` handler sets `isFrozen = true`; registers end-of-turn unfreeze listener |
+Further "own-moment" hook points (on-take-damage, on-attack, …) are added as new role interfaces when a card first needs one; each is invoked the same way by its owning handler. **Freeze** is not a keyword hook — it is a status (`isFrozen`) set by `FreezeTargetAction` and cleared by the turn-lifecycle unfreeze sweep (§4 Turn Lifecycle step 4).
 
 ### `IEffect`
 
@@ -479,7 +498,7 @@ Every action carries a `sourceId`, and `EffectContext` is built from the **actio
 
 So if Yeti's Deathrattle damages a minion, the damage's `sourceId` is **Yeti**, not the spell that killed Yeti. This determines friendly/enemy evaluation (Item 2 conditions), the Lifesteal heal target, and which entity "dealt" the damage for any watching trigger.
 
-**Attribution ≠ keyword application.** `sourceId` is *data* on the event, so a watcher correctly credits Yeti even though Yeti is dead. But Lifesteal/Poisonous are **active keywords backed by listeners** that were unsubscribed when Yeti left play — so they do **not** fire for Yeti's own post-death Deathrattle damage. This falls out of the active-keyword model (Item 8 follow-on) with no special-casing; see "Unaddressed Features" for the deferred snapshot-based-application case.
+**Attribution ≠ keyword application.** `sourceId` is *data* on the event, so a watcher correctly credits Yeti even though Yeti is dead. But Lifesteal/Poisonous are **keyword hooks pulled from the source's effective keywords** (§3 `IKeyword`), and a dead Yeti is off the board — so `EffectiveKeywords(source)` is empty and the hooks do **not** fire for Yeti's own post-death Deathrattle damage. No listener lifecycle is involved; this falls out of "read effective keywords from live board state" with no special-casing. See "Unaddressed Features" for the case where a card would *want* dead-source keyword effects (enabled by a death-snapshot keyword fallback).
 
 **`SpellDamageBonus`** is a read-only value computed **once at the start of spell resolution** and held on the context for the whole cast. Every `DealDamageEffect` in that spell reads the *same* snapshot and bakes the final number into its enqueued `DealDamageAction` (the action handler stays dumb — it applies the number it's given). Because the bonus is spell-scoped, not hit-scoped: a spell that deals damage twice still applies the bonus to both hits, and a spell that kills its own Spell-Power minion mid-cascade does not lose the bonus for its second half. It is `0` for any non-spell source, so it cannot leak into combat or hero-power damage.
 
@@ -814,18 +833,12 @@ When the engine issues `StartInterventionAction`:
 
 Features the current architecture **deliberately does not support** and that are deferred **indefinitely** (no planned epic/ticket, unlike the "deferred to a future epic" items tracked in the borrow-list/plan). Each entry records the limitation, why it exists, and what enabling it would cost — so a future card requirement can reopen it with full context rather than rediscovering the constraint.
 
-### Aura-granted active keywords
+> **Note (keyword model collapse):** an earlier entry here — *"aura-granted active keywords"* — has been **removed**, not deferred. It existed because keywords were split into declarative (queried) and active (event-bus listeners), and an aura granting a listener-backed keyword would have had to subscribe during stage-⑥ recalc, violating the Item 3 invariant. The active/listener category was eliminated (§3 `IKeyword`): all keywords are declarative, pulled from the effective view at the minion's own action moments, with follow-on actions expressed as role-interface hooks. Aura-granted keywords now behave identically to intrinsic ones with no special mechanism, so the limitation no longer exists.
 
-An aura **cannot grant an *active* keyword** (one whose `IKeyword.OnApplied`/`OnRemoved` register event-bus listeners — Lifesteal, Poisonous, Enrage, Windfury, Freeze). Aura grants (`AuraEffect.GrantedKeywords` → `MinionOnBoard.auraKeywords`) are restricted to **declarative** keywords (Taunt, Divine Shield, Stealth, Charge, Rush, Spell Damage +X).
+### Keyword effects on a dead source
 
-- **Why:** aura recalc runs in pipeline stage ⑥. Granting an active keyword there would require subscribing/unsubscribing listeners during recalc, violating the locked invariant (§3 `IEventBus`, Item 3) that *all* bus subscriptions happen inside action handlers (stage ④) — the property that makes the `birthEpoch < originEpoch` epoch-visibility filter total. Recalc must stay a side-effect-free list rewrite.
-- **Cost to enable:** a deferred-subscription mechanism (queue listener add/remove discovered during recalc and apply them inside an action-handler boundary) plus revisiting the Item 3 invariant. Non-trivial; reopens a foundational decision.
-- **Status:** no card in scope needs it. Revisit only when one does.
+A minion's **keyword hooks (Lifesteal, Poisonous, …) do not apply to damage its own Deathrattle deals after it has died.** The damage is still *attributed* to the dead minion (`sourceId` on the event, so watching triggers and friendly/enemy checks resolve correctly — see §3 "Source Attribution"), but the keyword *effects* don't fire.
 
-### Active keywords on a dead source
-
-A minion's **active keywords (Lifesteal, Poisonous, …) do not apply to damage its own Deathrattle deals after it has died.** The damage is still *attributed* to the dead minion (`sourceId` on the event, so watching triggers and friendly/enemy checks resolve correctly — see §3 "Source Attribution"), but the keyword *effects* don't fire.
-
-- **Why:** Lifesteal/Poisonous are listener-backed active keywords; the listeners were unsubscribed when the minion left play (Phase 1), before its Deathrattle resolves (Phase 2). No listener, no effect. This falls out of the active-keyword model with zero special-casing.
-- **Cost to enable:** snapshot-based keyword application — read the source's keywords off its death snapshot and apply Lifesteal/Poisonous outside the listener model, for dead sources only. A parallel code path to the listener mechanism.
+- **Why:** keyword hooks read the acting minion's **effective** keywords from live board state (§3 `IKeyword`). A dead source has left the board (death-wave Phase 1) before its Deathrattle resolves (Phase 2), so `EffectiveKeywords(source)` is empty. No special-casing.
+- **Cost to enable:** a death-snapshot fallback — when the source is dead, the relevant handler reads keywords off the source's `GraveyardMinion.snapshot` instead of live board state. A localized fallback in the affected handlers, not a parallel mechanism.
 - **Status:** no card in scope needs it. Revisit only when one does.

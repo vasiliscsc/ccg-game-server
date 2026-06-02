@@ -55,7 +55,11 @@ An online 1v1 collectible card game (Hearthstone-clone for initial scope). Featu
 
 ### Next session resume point
 
-**▶ BORROW-LIST PASS COMPLETE — all 13 items resolved (✅ below). RESUME AT THE END-OF-PASS PLAN RECONCILIATION.** Session of 2026-06-02 walked Items 12 and 13 and closed here. The spec is now fully refined; the next task is purely mechanical plan-side reconciliation, then implementation.
+**▶ BORROW-LIST PASS COMPLETE — all 13 items resolved (✅ below). RESUME AT THE END-OF-PASS PLAN RECONCILIATION.** Session of 2026-06-02 walked Items 12 and 13 and closed here. The spec is now fully refined (plus post-pass Fireplace-comparison amendments — see below); the next task is purely mechanical plan-side reconciliation, then implementation.
+
+**▶▶ PENDING SPEC EDIT (carry to next session) — Item 12 Fork-A tightening.** The random-K targeting path (§3 `ITargetSelector`, "random-K" consumption mode) currently has the effect enqueue an action carrying a *frozen pool* (`EntityId[]`). Change it to **carry the `ITargetSelector` reference and evaluate it at stage ④** (then draw K), so selection stays pure *and* current and is co-located with the draw — avoids a staleness bug where a pooled entity dies between enqueue and the draw action's ④. Small edit: update the §3 `ITargetSelector` "random-K" row + the Item 12 decision note in the borrow-list file. Identified during the 2026-06-02 Fireplace comparison; deferred by user to next session.
+
+**Post-pass amendments (Fireplace comparison, 2026-06-02):** the spec is no longer frozen at the 13-item state. A comparison against jleclanche/fireplace (open-source HS clone) is driving refinements on shared subsystems. Applied so far: **keyword-model collapse** — eliminated the active/declarative keyword split; all keywords declarative, pulled at the minion's own action moments via role-interface hooks (`IOnDealtDamage`), `IKeyword` loses `OnApplied`/`OnRemoved` (no bus subscriptions; bus = `ITrigger` only); dissolved both Unaddressed-Features walls. Right cut = keyword (own-action-moment) vs trigger (board-wide event). See the borrow-list note's "second follow-on amendment (2026-06-02)" under Item 8. The user may have further Fireplace-driven points.
 
 **▶ Next task — Plan reconciliation** (full instructions under "Plan reconciliation — end-of-pass task" in the borrow-list note). Walk every `Plan impact:` list in the borrow-list note and apply the edits to the epic/ticket files under `docs/superpowers/plans/2026-05-27-ccg-game-logic/`, **creating new tickets/epics where flagged**. Known new work (consolidated in the note's reconciliation list):
 - `StabilizationAbortReport` telemetry → new Epic 04 **T4.8** (Item 1)
@@ -66,6 +70,7 @@ An online 1v1 collectible card game (Hearthstone-clone for initial scope). Featu
 - Tribe/keyword 4-field model → data-model + auras tickets (Item 8 + follow-on)
 - **`ITargetSelector` library → new Epic 08 ticket** beside T8.10 (Item 12); validator target-check becomes selector-membership; cards carry `(selector, cardinality)`
 - Replay artifacts → Epic 16: keep event-log replay (client path) + add command/input-log canonical replay (Item 13); ruleset-version stamp flagged for Game Server spec
+- **Keyword-model collapse → Epic 01 `IKeyword` + Epic 07 re-scope** (post-pass amendment 2026-06-02, from the Fireplace comparison): `IKeyword { KeywordId }` + role hooks (`IOnDealtDamage`), NO `OnApplied`/`OnRemoved`/subscriptions; Lifesteal/Poisonous = hooks, Windfury = declarative read, Enrage = stage-⑥ recompute, Freeze = turn sweep; aura grants accept any keyword; bus carries only `ITrigger`. Dissolved both Unaddressed-Features walls (aura-granted active keywords gone; dead-source reframed). Spec §3 `IKeyword`/`IEventBus`/Source-Attribution + Unaddressed Features amended.
 
 Then re-verify the README index/outline/progress tracker and resume line, and implementation can begin at **Epic 01 / T1.1**. (Workflow note: reconciliation edits the *plan*, not the spec — the spec is done.)
 
