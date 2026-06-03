@@ -60,7 +60,7 @@ enchantments: StatModifier[]  // permanent buffs; Silence clears all
 auraAttackBonus, auraHealthBonus: int  // recalculated each aura pass; never stored in enchantments
 attack: int                   // = baseAttack + Σenchantments.attackDelta + auraAttackBonus
 maxHealth: int                // = baseHealth + Σenchantments.healthDelta + auraHealthBonus
-currentHealth: int            // takes damage; healed up to maxHealth
+currentHealth: int            // takes damage; healed up to maxHealth. ≤0 (or destroy-marked) ⇒ "mortally wounded" (pending death): the minion stays ON the board — still targetable, countable, and keyword-active — until the next death-wave settle (§4 ⑦), not removed on the spot (amendment B)
 keywords: string[]            // maintained EFFECTIVE view = intrinsicKeywords ∪ grantedKeywords ∪ auraKeywords; resolved to IKeyword at runtime; what the engine queries. (Keyword analog of effectiveTribes.)
 intrinsicKeywords: string[]   // from the card definition, seeded at summon; Silence clears
 grantedKeywords: string[]     // PERMANENT non-aura grants after summon; retained across a RetainEnchantments bounce; Silence clears. Aura grants are NOT here.
@@ -292,6 +292,7 @@ All events carry an `OccurredAt` timestamp and an `originEpoch: int` (the `curre
 | Event | Key fields |
 |---|---|
 | `MinionSummonedEvent` | minion, ownerId? (null = neutral zone) |
+| `MinionMortallyWoundedEvent` | minionId, sourceId, cause — fires the instant a minion enters pending-death (currentHealth ≤0 from damage, maxHealth ≤0 from aura loss, or a destroy-mark), **before** the death-wave settle removes it; distinct from `MinionDiedEvent` (Phase-1 removal). The hook for dying-window reactions (e.g. Intervention × lethal, amendment B ref R1). |
 | `MinionDiedEvent` | minionId, snapshot, sourceId, diedOnTurn |
 | `MinionTransformedEvent` | minionId, newCard |
 | `NeutralMinionSpawnedEvent` | minion |
@@ -596,9 +597,19 @@ interface ITargetSelector {
 
 `Select` is a **pure function of `GameState`** (read via the context) — no mutation, no RNG, no enqueueing. Like the condition library it evaluates *relative to* the source: "enemy" means "opponent of `context.sourcePlayerId`".
 
-**Singletons — parameterless** (referenced by reference, no per-call allocation): `AllEnemyMinions`, `AllFriendlyMinions`, `AllMinions`, `EnemyHero`, `FriendlyHero`, `AllEnemyCharacters`, `AllFriendlyCharacters`, `Self`.
+**Singletons — parameterless** (referenced by reference, no per-call allocation): `AllEnemyMinions`, `AllFriendlyMinions`, `AllNeutralMinions`, `AllMinions`, `AliveEnemyMinions`, `AliveFriendlyMinions`, `AliveNeutralMinions`, `AliveMinions`, `DeadEnemyMinions`, `DeadFriendlyMinions`, `DeadNeutralMinions`, `DeadMinions`, `EnemyHero`, `FriendlyHero`, `AllEnemyCharacters`, `AllFriendlyCharacters`, `Self`.
 
 **Factories — parameterized:** `AdjacentTo(id)`, `MinionsWithTribe(Tribe)`, `MinionsWithKeyword(string)`, `OtherThan(selector, id)`, `Union(s1, s2, …)`, `Filter(selector, ITriggerCondition)` (reuse the condition library as the entity predicate — e.g. *"all damaged friendly minions"* = `Filter(AllFriendlyMinions, IsDamaged)`).
+
+**`All…` / `Alive…` / `Dead…` (mortally-wounded inclusion).** A minion at `currentHealth ≤ 0` that is **still on the board** — not yet removed by death resolution — is **"mortally wounded"** (a.k.a. pending death). (This window is transient under any model but becomes a designer-meaningful state under the cascade-settle death model — Fireplace amendment B, §4 ⑦ — where such a minion can persist across same-cascade reactions.) The three on-board minion families partition exactly on this distinction — **`All… = Alive… ∪ Dead…`**, disjoint:
+
+| Family | Returns | Use when |
+|---|---|---|
+| `AllEnemyMinions` / `AllFriendlyMinions` / `AllNeutralMinions` / `AllMinions` | **every on-board minion** of that side, **mortally-wounded included** | the effect should treat the doomed-but-present body as real — HS-faithful AoE and board-count effects ("deal 1 to all enemies", "damage equal to enemy minions") |
+| `AliveEnemyMinions` / `AliveFriendlyMinions` / `AliveNeutralMinions` / `AliveMinions` | only minions with **`currentHealth > 0`** | the effect must **not** act on a corpse-in-waiting — e.g. "return a random alive enemy minion to hand", "buff your lowest-health alive minion" |
+| `DeadEnemyMinions` / `DeadFriendlyMinions` / `DeadNeutralMinions` / `DeadMinions` | only the **mortally-wounded** (`currentHealth ≤ 0`, still on board, pending removal) | the effect targets the dying specifically — an **Intervention × lethal** save/finisher (amendment B, ref R1), "destroy all mortally-wounded enemies", counting the doomed |
+
+Each `Alive…` singleton is exactly `Filter(<corresponding All…>, currentHealth > 0)` and each `Dead…` is `Filter(<corresponding All…>, currentHealth ≤ 0)`, surfaced as named singletons for ergonomics. **Heroes have no mortally-wounded state** — a 0-health hero ends the game at §4 ⑧ rather than lingering — so there is no `Alive`/`Dead` hero/character variant. **Graveyard minions are *not* covered here:** an already-removed minion (resurrection / "died this turn" pools) is not a board target — selecting from the graveyard to *summon* is a separate primitive, not an `ITargetSelector`.
 
 **Ordering.** The returned list is **ordered by the canonical board order** already locked for death/trigger resolution (§4 ⑦): current player `board[0..n]` → opponent `board[0..n]` → neutral zone by index, with heroes slotted by the selector's own definition. Ordered, not unordered, because sequential application (damage → interleaved death checks) is order-sensitive and determinism demands a fixed order. Selectors never invent a second ordering.
 
@@ -607,7 +618,7 @@ interface ITargetSelector {
 | Mode | How the effect consumes `Select(context)` |
 |---|---|
 | **Auto-hit** (AoE) | Enqueue one concrete action per entity, in returned order — e.g. Flamestrike enqueues a `DealDamageAction` per `AllEnemyMinions` entry. Pure: no RNG. |
-| **Random-K** | Enqueue **one** action carrying the *pool* (the selector's output) + `k`; the **stage-④ handler draws K** using that action's epoch-derived `IRandom`. Selectors stay pure — randomness is consumed only at ④, preserving the Item-6 invariant verbatim and keeping each draw attributable to one action's epoch (clean for the `StabilizationAbortReport`). |
+| **Random-K** | Enqueue **one** action carrying the **`ITargetSelector` reference** (not a pre-computed pool) + `k`; the **stage-④ handler evaluates the selector against the *current* board, then draws K** using that action's epoch-derived `IRandom`. Carrying the selector rather than a frozen `EntityId[]` keeps selection both pure *and* current — if a candidate is mortally wounded or removed between enqueue and the draw, the ④ evaluation reflects it (and the card chooses the right `All…/Alive…/Dead…` family to decide whether the dying still count). Randomness is consumed only at ④, preserving the Item-6 invariant verbatim and keeping each draw attributable to one action's epoch (clean for the `StabilizationAbortReport`). |
 | **Player-choice** (Discover, mid-effect targeting) | Issue `StartChoiceAction` with `options =` the candidate set → existing `PendingChoice` (§4). The selector *feeds* the choice; it does not subsume it — "compute targets" and "interrupt for player input" stay separate concerns. |
 
 **Player-target legality is unified into the same primitive.** A card/effect requiring a player-supplied target declares a `(selector, cardinality)` pair. The §4 ③ validator's *"is a legal target type for this card"* check is then exactly: **`chosen ∈ selector.Select(context)`** (plus the cardinality/optionality rule) → `InvalidTarget` otherwise. The *same* `AllEnemyMinions` selector that an AoE uses to hit every enemy is what a single-target spell uses to define its legal targets — so previewed legality (client highlighting), validation, and effect resolution can never disagree. This replaces the spec's earlier hand-wave with one source of truth (parallel to how §4 ③ made the validator the single source of truth for action legality).
@@ -690,14 +701,16 @@ interface IRandom {
 | Death sort order | `DeathResolutionService` — current player board[0..n] by index, opponent board[0..n] by index, neutral zone by index |
 | Deathrattle before Reborn | `DeathResolutionService` — Phase 3 runs only after all Phase 2 actions complete |
 | New deaths during deathrattles | `DeathResolutionService` — deferred to next wave, not resolved mid-wave |
-| Action isolation | `GameEngine` — one action at a time; next action not started until death check runs to stability |
+| Resolution cadence | `GameEngine` — one action at a time; ①–⑥ run per action, draining the queue; ⑦ death + ⑧ win fire **only when the queue empties** (cascade settled), then loop. Deaths are batched at the settle point, never mid-cascade — so triggered reactions resolve before removals (amendment B) |
 | Randomness | `IRandom` — per-action stream derived from `mix(rngSeed, currentActionEpoch)`; consumed only in stage ④ handlers; draw order fixed by the rows above |
 
 ---
 
 ## Section 4: Action Processing Pipeline
 
-Nine stages in strict sequence. The engine does not advance to the next stage until the current one completes.
+The pipeline is a **loop**, not a single linear pass (cadence amended 2026-06-03 — Fireplace amendment B). Stages **①–⑥ run per action** as each is dequeued; triggered reactions enqueue further actions, and the engine keeps dequeuing and running ①–⑥ until the **action queue is empty** — the point at which the cascade started by a top-level action has fully *settled*. Only then do the **settle stages** run: **⑦ Death Resolution** and **⑧ Win Check**. **⑨** drives the loop (dequeue next, or trigger the settle when the queue is empty). The engine never advances a stage until the current one completes.
+
+Because deaths are processed only at the settle point, **every triggered reaction from the settling cascade resolves *before* any minion is removed**: a minion reduced to ≤0 HP (or destroy-marked) is **mortally wounded** — still on the board, still targetable and countable, still keyword-active — until the settle, not removed on the spot. This is the Hearthstone-faithful cadence; it replaced an earlier per-action model where ⑦ ran at the tail of *every* action (so a dying minion vanished before same-event reactions ran). See amendment B in the borrow-list note for the design rationale, the mechanics it unlocks (overkill, retaliation, simultaneous-death, count-the-doomed, Intervention × lethal, Inversion × lethal), and the worked example.
 
 ### ① Submit
 
@@ -740,13 +753,13 @@ Events are published in the order returned by the handler. For each event, `IEve
 
 ### ⑥ Aura Recalculation
 
-All registered `IAura.Calculate(state)` implementations are run. `auraAttackBonus` and `auraHealthBonus` on every minion are zeroed and fully rewritten. Any minion newly at ≤0 `maxHealth` is marked for death.
+All registered `IAura.Calculate(state)` implementations are run. `auraAttackBonus` and `auraHealthBonus` on every minion are zeroed and fully rewritten. A minion newly at ≤0 `maxHealth` **enters pending-death** (publishing `MinionMortallyWoundedEvent`, cause = aura loss) — but it is **not removed here**; like a damage-killed minion it lingers, mortally wounded, until the next settle (⑦).
 
-Recalculation is triggered after any action that changes board composition, minion stats, or keywords. It also runs after each action processed in Phase 2 of the death wave, and after Phase 3 reborn summons.
+Recalculation runs **per action** (⑥, while draining) — after any action that changes board composition, minion stats, or keywords — and also after each action processed in Phase 2 of the death wave and after Phase 3 reborn summons. Keeping aura recalc per-action (cheaper than deferring it) means mid-cascade reactions always read fresh stats; only *death* is deferred to the settle, not aura math.
 
 ### ⑦ Death Resolution
 
-`DeathResolutionService` runs the wave loop:
+**Settle stage — runs only when the action queue has drained to empty** (the cascade started by a top-level action has fully settled), never mid-cascade. While the queue is non-empty the engine stays in ①–⑥, so every triggered reaction resolves first and a mortally-wounded minion remains on the board (targetable, countable, keyword-active — and savable by a dying-window intervention, amendment B ref R1) right up to this point. Then `DeathResolutionService` runs the wave loop:
 
 1. **Collect** all minions with `currentHealth ≤ 0` or marked for destruction. Sort: current player `board[0..n]` → opponent `board[0..n]` → neutral zone by index. If none, exit loop. Otherwise publish `DeathWaveStartedEvent { waveIndex }` (0-based, incremented per wave).
 2. **Phase 1 — Remove & grieve:** for each in sort order — remove from board, add `GraveyardEntry`, publish `MinionDiedEvent`.
@@ -769,7 +782,7 @@ This is a last-line backstop. The primary mitigation is upstream content validat
 ```
 StabilizationAbortReport {
   rngSeed:            ulong          // GameState.rngSeed; with preActionState.currentActionEpoch reproduces this action's RNG via mix(rngSeed, epoch) (see §3 IRandom)
-  preActionState:     GameState      // full snapshot at the START of the triggering action (carries currentActionEpoch) — the Build step
+  preActionState:     GameState      // full snapshot at the START of the triggering top-level action whose settle entered the runaway wave (carries currentActionEpoch) — the Build step
   triggeringAction:   GameAction     // the action submitted that began the runaway — the Script step
   wavesReached:       int            // = MaxDeathWaves
   cascadeTrace:       GameEvent[]     // ordered events from action start to abort — the Exact-trace Assert
@@ -780,11 +793,11 @@ A regression scenario built from a report asserts: submitting `triggeringAction`
 
 ### ⑧ Win Condition Check
 
-If any hero has health ≤ 0: if both ≤ 0 the game is a draw, otherwise the other player wins. `GameEndedEvent` is published and `phase` is set to `Ended`.
+**Settle stage — runs immediately after ⑦**, at the same queue-empty settle point. If any hero has health ≤ 0: if both ≤ 0 the game is a draw, otherwise the other player wins. `GameEndedEvent` is published and `phase` is set to `Ended`.
 
-### ⑨ Dequeue Next Action
+### ⑨ Dequeue / Drive Loop
 
-Pull the next action from `IActionQueue` and return to ①. If the queue is empty, the engine awaits the next player action.
+The loop driver. **If the action queue is non-empty**, pull the next action and return to ① (continue draining the cascade through ①–⑥). **If the queue is empty**, run the settle stages ⑦ (death wave) then ⑧ (win check); the death wave may enqueue actions (deathrattles, reborns), so if the queue is non-empty again, resume draining — otherwise the cascade is fully settled and the engine awaits the next player action. (A player-submitted action is just the next thing dequeued, starting a fresh cascade.)
 
 ---
 
@@ -811,6 +824,7 @@ Each of these produces actions that go through the full pipeline.
 ### PendingChoice Interruption
 
 When an effect issues `StartChoiceAction`:
+- **Pre-halt death rule (amendment B):** before halting, Death Resolution (⑦) runs to settle any pending deaths, so the player never chooses against a board where mortally-wounded minions still linger. (A choice is not keyed to the dying window, so there is no exception here — contrast `PendingIntervention` below.)
 - `GamePhase` → `PendingChoice`
 - Remaining effect actions (the continuation) are serialised into `PendingChoice.context`
 - Pipeline halts — no further actions are processed until the choice resolves
@@ -819,6 +833,7 @@ When an effect issues `StartChoiceAction`:
 ### PendingIntervention Interruption
 
 When the engine issues `StartInterventionAction`:
+- **Pre-halt death rule + R1 exception (amendment B):** before halting, Death Resolution (⑦) runs to settle pending deaths — **except for a dying-window intervention** (one keyed to the pending-death window itself, e.g. Intervention × lethal, ref R1). There the mortally-wounded minion must stay on the board for the responder to act on, so deaths are **not** pre-resolved; the held card's effect (e.g. inverting it to `currentHealth > 0`) is processed before the next settle, where the death wave then simply does not collect it. *(What opens a dying-window intervention — a general engine rule vs an armed/secret-style card — and batching of multiple simultaneous woundings are deferred to the Secrets / armed-reactive-trigger discussion; see the borrow-list note.)*
 - `GamePhase` → `PendingIntervention`
 - `heldAction` stored in `GameState.pendingIntervention` — not yet processed
 - Timeout timer starts
@@ -840,5 +855,6 @@ Features the current architecture **deliberately does not support** and that are
 A minion's **keyword hooks (Lifesteal, Poisonous, …) do not apply to damage its own Deathrattle deals after it has died.** The damage is still *attributed* to the dead minion (`sourceId` on the event, so watching triggers and friendly/enemy checks resolve correctly — see §3 "Source Attribution"), but the keyword *effects* don't fire.
 
 - **Why:** keyword hooks read the acting minion's **effective** keywords from live board state (§3 `IKeyword`). A dead source has left the board (death-wave Phase 1) before its Deathrattle resolves (Phase 2), so `EffectiveKeywords(source)` is empty. No special-casing.
+- **"Dead" here means *removed*, not *mortally wounded* (amendment B):** a minion at ≤0 HP that is still on the board (pending death, before the settle) is *fully keyword-active* — if it deals damage in that window (e.g. a dying-swing retaliation), its Lifesteal/Poisonous etc. *do* fire, because `EffectiveKeywords(source)` reads it from the live board. The limitation applies only once the death wave's Phase 1 has actually removed the source.
 - **Cost to enable:** a death-snapshot fallback — when the source is dead, the relevant handler reads keywords off the source's `GraveyardMinion.snapshot` instead of live board state. A localized fallback in the affected handlers, not a parallel mechanism.
 - **Status:** no card in scope needs it. Revisit only when one does.

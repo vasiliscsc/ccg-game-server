@@ -541,6 +541,99 @@ No rejection, nothing for Unaddressed Features. Disposition test outcome: **SPEC
 
 ---
 
+## Fireplace-comparison amendments (post-pass, 2026-06-02+)
+
+Post-pass refinements driven by comparing our spec against **jleclanche/fireplace** on shared subsystems (see the `reference-fireplace-comparison` memory). These are **spec amendments beyond the 13 items** — the spec is not frozen. Each is a distinct shared-subsystem comparison point, not tied to a borrow-list item.
+
+> The first such amendment — the **keyword-model collapse (2026-06-02)** — is recorded under **Item 8 → "Follow-on amendment (2026-06-02): active/declarative split COLLAPSED"** above, since it grew out of the Item 8 keyword discussion. The amendments below are standalone.
+
+### Comparison point B — death-resolution cadence: per-action → cascade-settle (Hearthstone-faithful)
+
+**The design question (the framing the decision was made under):**
+
+> **Is "the moment of death" something the game's mechanics get to play with — or is death an instantaneous bookkeeping fact?**
+
+Our §4 pipeline runs **⑥ aura recalc + ⑦ death resolution per action**, with the invariant *"next action not started until death check runs to stability."* Fireplace (and Hearthstone) instead settle deaths **once, when the whole triggered cascade drains** (`_action_stack` empty → refresh auras + `process_deaths`). The behavioural difference is purely *ordering*: in our model a minion that hits 0 HP is **removed immediately (⑦)**, before same-event triggered reactions are dequeued (⑨); in HS it **lingers in a "mortally wounded" / pending-death state** — still on the board, still counted, still emitting auras, still able to trigger and be referenced — until the sequence settles, *after* those reactions resolve.
+
+Worked example that makes it concrete — I cast "deal 1 to minion M" (a 1/1, lethal); opponent's minion N triggers *"when a friendly minion takes damage, deal damage to the enemy hero equal to the number of minions I control"*:
+- **HS / Fireplace:** damage → N's trigger resolves while M is still on board → counts **2** (M + N) → I take **2**. Then the death step removes M.
+- **Our spec (per-action ⑦):** damage → M to 0 → ⑦ removes M → ⑨ N's reaction runs against a board of just N → counts **1** → I take **1**.
+
+Same board, same cards → **2 vs 1 damage**, because in our model the dying minion has already vanished before the same-event reaction reads the board.
+
+**✅ DECISION (2026-06-03): ADOPT Option 2 — cascade-settle (Hearthstone-faithful) death cadence.**
+
+Decided as a **game-design** call, not an engineering one (it's a pre-implementation spec edit — no code to refactor; cost is spec coherence only). The deciding factor is the *design space* each cadence opens:
+
+- **Option 2 introduces a "mortally wounded" window** — a 0-HP-but-not-yet-removed minion — which is a designable beat. It unlocks the entire **"dying matters"** mechanic family: **overkill / excess-damage**, **retaliation / dying-swinging** (a doomed minion gets a last act from the board), **simultaneous-death synergies** (minions that trade both resolve as present; "died at the same time" deathrattles), **count-the-doomed** (board-counting effects see the body about to die), and **last aura pulse** (a dying buffer still buffs the same-event reaction).
+- **Option 2 is nearly a superset of Option 1.** Any effect can opt back into instant-death semantics by filtering `currentHealth > 0`; the reverse is impossible — instant death cannot recover the dying-window beat. The price is a recurring per-card *"does this see the doomed minion?"* decision (cognitive load + bug surface), which Option 1 settles once, globally.
+- **Option 1 (instant death) is a coherent alternative we rejected** for this game: always-true board between actions, adaptive "machine-gun" sequential effects that never waste a hit on the already-dead, maximum legibility, cleaner spectating/analysis. Good for a tighter game; but it forecloses the dying-matters family entirely.
+
+The decision was **"without a doubt" Option 2** because two of this game's *signature* mechanics interact natively with the dying-window (see references below).
+
+**Mechanism (how Option 2 is realized):**
+- We do **not** adopt Fireplace's literal action-*stack*. Our **FIFO trigger-reaction queue already matches Hearthstone's trigger-queue semantics** (triggers enqueue and resolve in order). The only structural change is *where the death step fires*.
+- **Move ⑦ death + ⑧ win from per-action to "when the action queue drains"** (cascade settled), then loop the existing death wave (Phase 1/2/3, `MaxDeathWaves=16` cap unchanged — Item 1). Stages ④⑤⑥ still run per action while draining.
+- **New entity state: "pending death"** — a minion at `currentHealth ≤ 0` that remains on the board until the settle point. This single concept is the source of every downstream ripple ("what does X see when a minion is mid-death?").
+- **New rule:** resolve deaths **before halting for a `PendingChoice`/`PendingIntervention`** — you never pick a target (or open an intervention window) while lethally-damaged minions linger, except where the intervention is *itself* keyed to the dying window (see reference R1).
+
+**📌 Design-avenue references (recorded for future card design — these are *why* Option 2 won):**
+
+- **R1 — Intervention × lethal.** The locked single-response **Intervention** window can fire *inside* the pending-death window: *"in response to your minion taking lethal damage, you may…"* — a **save-from-lethal** interaction. Under instant death there is no such moment; the minion is already in the graveyard before anyone could respond. Option 2 makes "rescue from death" a playable beat. (Requires the pre-halt death rule above to carve out an exception for dying-window-keyed interventions.)
+- **R2 — Inversion × lethal.** The **Inversion** mechanic (Attack↔Health swap) can be played *in response to lethal*: a minion at 0 health flips its former Attack into Health and **survives**. A genuinely *ours-not-Hearthstone's* mechanic that exists **only** if a dying minion lingers long enough to be inverted. (Exact stat/damage-carry math is an inversion-semantics detail to pin when the card is designed; the *avenue* is what Option 2 unlocks.)
+
+**Disposition: SPEC (§3 selectors applied; §4 cadence rewrite unblocked) + Plan-impact.**
+
+- **✅ SUB-DECISION RESOLVED (2026-06-03) — pending-death targetability, via an `All… / Alive… / Dead…` selector trichotomy (APPLIED to spec §3 `ITargetSelector`).** Rather than make "alive" a single global property, the targeting library exposes the distinction as explicit selector families that **partition the on-board minions**, `All… = Alive… ∪ Dead…` (disjoint):
+  - `AllEnemyMinions` / `AllFriendlyMinions` / `AllNeutralMinions` / `AllMinions` — **include** mortally-wounded (HS-faithful AoE / board-count).
+  - `AliveEnemyMinions` / `AliveFriendlyMinions` / `AliveNeutralMinions` / `AliveMinions` — `currentHealth > 0` only (explicit opt-out from the dying window).
+  - `DeadEnemyMinions` / `DeadFriendlyMinions` / `DeadNeutralMinions` / `DeadMinions` — the mortally-wounded only (`currentHealth ≤ 0`, on board, pending removal) — the natural home for an **R1 Intervention × lethal** save/finisher.
+
+  This resolves "what does a selector see during the pending-death window" *per card* (the designer picks the family) and makes the §4 ③ validator's target-legality well-defined for each (membership in the declared selector's output). Also added a plain `AllNeutralMinions` for symmetry, and recorded that **graveyard ("died this turn" / resurrection) selection is a *separate* primitive**, not an `ITargetSelector` (you summon from the graveyard, you don't board-target it). Dovetails cleanly with the pending **Item 12 Fork-A tightening** (random-K carries the *selector*, evaluated against the current board at ④) — a card picks e.g. `AliveEnemyMinions` and the ④ draw naturally reflects the live board. **§4 cadence rewrite is now unblocked.**
+
+**Spec amendment — APPLIED (2026-06-03):**
+- **§3** `ITargetSelector` singleton catalog + the `All…/Alive…/Dead…` partition table and graveyard-exclusion note; the **random-K consumption row** retightened per Item 12 Fork-A (carry the *selector reference*, evaluate against the current board at ④, not a frozen pool).
+- **§4 intro** rewritten as a **loop** (not "nine stages in strict sequence"): ①–⑥ per action draining the queue; ⑦ death + ⑧ win are **settle stages** firing only when the queue empties; ⑨ is the loop driver. Mortally-wounded framing + the reactions-before-removals consequence stated.
+- **§4 ⑥/⑦/⑧/⑨** rewritten accordingly; **Deterministic Ordering** table "action isolation" row → "Resolution cadence" (settle-point batching).
+- **§4 `PendingChoice`** gains the pre-halt death rule; **`PendingIntervention`** gains it **with the R1 exception** (don't pre-resolve a death keyed to the dying window) + a forward note to the Secrets/armed-reactive discussion for window-opening + batching.
+- **§2B** gains **`MinionMortallyWoundedEvent`** (fires the instant a minion enters pending-death from any cause — damage / aura-loss / destroy-mark — distinct from `MinionDiedEvent`).
+- **§1 `MinionOnBoard`** `currentHealth` note gains the pending-death framing; **Unaddressed Features** dead-source-keyword entry now distinguishes *removed* (keywords don't fire) from *mortally-wounded* (still on board, keywords DO fire).
+
+Both queued spec edits (the §4 cadence rewrite **and** Item 12 Fork-A) are now landed; the spec is internally consistent (the earlier "amendment B, §4 ⑦" forward reference from §3 is now satisfied). See the 2026-06-03 R1 follow-up subsection below for the realization detail + deferred design choices routed to point D.
+
+**Plan impact:**
+- **Epic 04 / pipeline ticket (`GameEngine` action loop)** — death/win checks move to the queue-drain boundary; the loop is "drain ④⑤⑥ → at empty, run ⑦ wave + ⑧ → loop." Re-verify the epoch model (Item 3) is untouched (epochs are per-action at ④, independent of when ⑦ runs) — confirm only.
+- **Epic 04 / `DeathResolutionService` (T4.5)** — wave loop itself unchanged; only its *invocation point* moves. Re-check `StabilizationAbortReport` snapshot semantics (Item 1 / T4.8) — "start of the triggering action" when deaths now span a settled cascade.
+- **Epic 01 / `MinionOnBoard`** — add the pending-death state (a 0-HP minion is valid on-board until settle); scenario builders must allow constructing it.
+- **Epic 08 / `ITargetSelector` + validator** — implement the `All…/Alive…/Dead…` minion-selector families (12 singletons; `Alive…` = `Filter(All…, hp>0)`, `Dead…` = `Filter(All…, hp≤0)`, partitioning the on-board minions); the same families govern selector output, §4 ③ validity, and client highlighting. Scenario tests: `All` includes a mortally-wounded minion, `Alive` excludes it, `Dead` returns exactly it, `All = Alive ∪ Dead` disjoint.
+- **Epic 09 (source attribution, Item 9)** — the "death-snapshot if already dead" rule must cover the new pending-death source window (a source at 0 HP but still on board).
+- **Test scenarios** — the 2-vs-1 worked example above as a regression fixture; overkill/retaliation/simultaneous-death/count-the-doomed timing tests; R1 save-from-lethal-intervention and R2 invert-from-lethal as design-validation scenarios when those cards exist.
+
+#### Follow-up (2026-06-03): how an R1 dying-window intervention fits the pipeline
+
+**Question raised:** a held card *"if a friendly minion is mortally wounded during the opponent's turn, you may invert it"* needs to fire *during* the dying window — but at the moment the minion hits 0 HP the action queue may still be non-empty, so the death wave hasn't run. How does the intervention get scheduled in?
+
+**Resolution — the deferred death wave *is* the window; correct ordering is by construction, not by scheduling.** The minion has **not died** — it's *mortally wounded* (on board) and stays that way until the queue drains. So:
+
+> The death wave runs only when the queue is empty. The intervention is an action *in* the queue. Therefore it is dequeued and resolved **before** the queue can empty — i.e. before the death wave — every time.
+
+Trace: opponent AoE drops my **M** to 0 at its ④ → ⑤ a mortal-wounding hook fires → R1 trigger enqueues `StartInterventionAction`. Queue is non-empty, so ⑦ does **not** run. Draining eventually dequeues the intervention → pipeline halts, my window opens with **M still on the board** → I invert M → its health flips `> 0` → it is no longer mortally wounded. Queue finally empties → ⑦ collects `currentHealth ≤ 0` → M is excluded → M lives. (Skip/timeout → M stays at 0 → collected normally.)
+
+**This costs three things in the §4-amendment-B rewrite:**
+1. **A mortal-wounding hook at ⑤ — `MinionMortallyWoundedEvent`** — fires the instant a minion enters pending-death **from any cause** (damage to ≤0, aura loss dropping maxHealth ≤0, destroy-mark), **distinct from `MinionDiedEvent`** (death-wave Phase-1 removal). R1 keys off *wounding*, not *died* — that is the entire difference between "save it" and "too late." (A damage-only version could instead reuse `DamageTakenEvent` + an `IsMortallyWounded` condition; the dedicated event is the clean source-agnostic hook and also serves any future "whenever a minion would die" card.)
+2. **An R1 exception to the pre-halt death rule.** The rule "resolve deaths before halting for a choice/intervention" (so a *normal* choice sees a clean board) must carve out dying-window-keyed halts: **pre-resolve deaths before a halt *unless the halt is itself keyed to the pending-death window*** — you must not pre-kill the death you're offering to prevent.
+3. **Reuse `PendingIntervention` as-is** — `respondingPlayerId` = non-active player, single response (play the card / skip), timeout injects a skip (consistent with Item 13's timeout-as-injected-input). No new phase.
+
+**Design choices surfaced, deliberately deferred (not decided this session):**
+- **What opens the window** — a general engine rule (always open on friendly mortal-wounding during opponent's turn) vs. only when the responder holds an **armed/secret-style card**. *Same machinery as Secrets (Fireplace menu point D)* — a held reactive card with a live off-board trigger; R1 is the *player-choice* flavor, a Secret the *auto-resolve* flavor. Likely **one "armed reactive trigger" concept covers both** → fold this into the point-D discussion.
+- **Batching** — one AoE wounding several friendlies = one window (save which / save all) or N sequential windows? FIFO yields N unless batched.
+- **Scope of "mortally wounded"** — does the hook (and R1's offer) include *marked-for-destruction* (destroy bypasses health, so inversion can't restore positive HP → save fails), or only health-based lethality?
+- **R2 stat-math dependency (separate from the pipeline)** — the save only works if inversion leaves `currentHealth > 0` (does inverting clear damage / recompute current HP from the new maxHealth?). The pipeline handles "if >0 at drain, it lives" regardless; whether inversion *achieves* that is the R2 inversion-semantics rule to pin when R2 is designed.
+
+**Disposition:** confirms amendment B's R1 reference is pipeline-realizable; `MinionMortallyWoundedEvent` + the pre-halt R1 exception are now **APPLIED** to §2B / §4 (2026-06-03); the window-opening + batching questions are routed to Fireplace menu point D (Secrets / armed reactive triggers), still open.
+
+---
+
 ## Topics deliberately omitted
 
 These came up in the investigation but don't merit changes:
