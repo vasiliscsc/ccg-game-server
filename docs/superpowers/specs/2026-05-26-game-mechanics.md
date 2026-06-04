@@ -132,7 +132,7 @@ TurnState           — activePlayerId: string, number: int
 TimerState          — secondsRemaining: int
 PendingChoice       — waitingPlayerId: string, choiceType: ChoiceType, options: ChoiceOption[],
                        context: JsonElement  // stores effect continuation
-PendingIntervention — respondingPlayerId: string, heldAction: GameAction, timeoutSeconds: int
+PendingIntervention — respondingPlayerId: string, heldAction: GameAction?, timeoutSeconds: int  // heldAction null = post-reaction window (nothing held — e.g. a dying-window save)
 MulliganState       — player1Completed: bool, player2Completed: bool
 CardPlayContext     — card: Card, playerId: string, targetId: string?, state: GameState (read-only)
 ```
@@ -231,7 +231,7 @@ All actions carry a nullable `SourcePlayerId` (null = system-issued) and a `Requ
 | `EndTurnAction` | playerId |
 | `SubmitMulliganAction` | playerId, cardIdsToKeep[] |
 | `SubmitChoiceAction` | playerId, choiceId, selectedOptionId |
-| `SubmitInterventionAction` | playerId, cardId? (null = skip) |
+| `SubmitInterventionAction` | playerId, cardId? (null = skip), targetIds[]? (the response card's chosen targets — for a batched post-reaction window, picked from the window's candidate set = the accumulated `matched` set; validated by the §4 ③ membership check) |
 | `SurrenderAction` | playerId |
 
 **System/effect-issued** — emitted by `IEffect`/`ITrigger` implementations; processed through the same pipeline as player actions:
@@ -239,7 +239,7 @@ All actions carry a nullable `SourcePlayerId` (null = system-issued) and a `Requ
 | Action | Key fields |
 |---|---|
 | `DrawCardAction` | playerId, sourceId? |
-| `DealDamageAction` | targetId, amount, sourceId |
+| `DealDamageAction` | target: `entityId` **or** `ITargetSelector` (AoE — evaluated at ④ over the current board), amount, sourceId — **the one channel for all damage, combat included** (see §3 "Reactive…"). A selector-carrying instance is a single declared action → a single ③′ interception window |
 | `HealAction` | targetId, amount, sourceId |
 | `DestroyMinionAction` | minionId, sourceId? |
 | `SummonMinionAction` | cardId, ownerId?, boardPosition, sourceId? |
@@ -258,11 +258,13 @@ All actions carry a nullable `SourcePlayerId` (null = system-issued) and a `Requ
 | `DiscardCardAction` | playerId, cardId? (null = random), sourceId? |
 | `SpawnNeutralMinionAction` | cardId, position?, sourceId? |
 | `StartChoiceAction` | waitingPlayerId, choiceType, options[], context |
-| `StartInterventionAction` | respondingPlayerId, heldAction, timeoutSeconds |
+| `StartInterventionAction` | respondingPlayerId, heldAction? (null = post-reaction window — nothing held, e.g. a dying-window save), timeoutSeconds |
 
 ### 2B. GameEvent types
 
 All events carry an `OccurredAt` timestamp and an `originEpoch: int` (the `currentActionEpoch` of the action that produced the event; used by `IEventBus` for creation-epoch visibility filtering — see §3 `IEventBus`). Events are append-only.
+
+**Bus ⊋ log.** Almost every event below is a **handler-produced state delta** (emitted at ⑤) and populates the append-only **event log** — the client wire format and replay archive. The bus, however, carries a *superset*: the lone **`ActionDeclaredEvent`** is a transient **pre-execution interception signal** (emitted at ③′, before any state change) that rides the bus only so `ITrigger`s can subscribe — it is **excluded from the persisted event log and the client wire format**, because it represents intent, not a delta. So "the event log is exactly the state-delta stream" stays true even though the bus delivers one extra signal type.
 
 **Lifecycle:**
 
@@ -327,6 +329,7 @@ All events carry an `OccurredAt` timestamp and an `originEpoch: int` (the `curre
 | Event | Key fields |
 |---|---|
 | `ManaChangedEvent` | playerId, mana, maxMana |
+| `HeroMortallyWoundedEvent` | playerId, sourceId, cause — fires the instant a hero crosses to ≤0 health (combat / spell / fatigue / self-damage), **before** the ⑧ win-check finalizes the loss; the hero analogue of `MinionMortallyWoundedEvent`, distinct from `GameEndedEvent` (the ⑧ finalization). The hook for save-the-hero reactions (heal-above-0 / immune in response to lethal — e.g. an Ice-Block-style effect realised as a post-reaction rather than damage prevention; for prevention see "Interception", §3). |
 | `HeroPowerUsedEvent` | playerId, targetId? |
 | `WeaponEquippedEvent` | playerId, weapon |
 | `WeaponDestroyedEvent` | playerId, weapon |
@@ -341,6 +344,7 @@ All events carry an `OccurredAt` timestamp and an `originEpoch: int` (the `curre
 | `DeathrattleTriggeredEvent` | minionId |
 | `ComboTriggeredEvent` | cardId, playerId |
 | `InspireTriggeredEvent` | playerId |
+| `ActionDeclaredEvent` | action — the universal **pre-execution** signal: published at stage **③′** (§4) for every dispatched action *after* it validates and *before* it executes (④), carrying the action itself. The single hook for **interception** (declaration-phase) reactions; subscribers filter on the carried action's runtime type/params via the condition library, so **no per-action-type `*Declared` taxonomy is required**. Fires **once** per action — a held action resumed after interception is re-validated but **not** re-declared (prevents redirect/secret loops). **Bus-only: not a state delta, so excluded from the persisted event log and client wire format** (see the "Bus ⊋ log" note above). (The pre-existing typed `AttackDeclaredEvent` is the combat-specific declaration, retained for renderer convenience at the same timing; it is not the general hook.) |
 
 **Choice / Intervention:**
 
@@ -360,7 +364,7 @@ When validation (§4 ②③) fails, the action is rejected with a **structured c
 enum ActionRejectionCode {
     WrongPhase, NotActivePlayer, CardNotInHand, NotEnoughMana,
     InvalidTarget, TargetStealthed, MustTargetTaunt,
-    AttackerCannotAttack, AttackerFrozen, AttackerExhausted, BoardFull,
+    AttackerNotAlive, AttackerCannotAttack, AttackerFrozen, AttackerExhausted, BoardFull,
     // … closed set; grows in lockstep with the §4 ②③ validation rules
 }
 
@@ -611,19 +615,60 @@ interface ITargetSelector {
 
 Each `Alive…` singleton is exactly `Filter(<corresponding All…>, currentHealth > 0)` and each `Dead…` is `Filter(<corresponding All…>, currentHealth ≤ 0)`, surfaced as named singletons for ergonomics. **Heroes have no mortally-wounded state** — a 0-health hero ends the game at §4 ⑧ rather than lingering — so there is no `Alive`/`Dead` hero/character variant. **Graveyard minions are *not* covered here:** an already-removed minion (resurrection / "died this turn" pools) is not a board target — selecting from the graveyard to *summon* is a separate primitive, not an `ITargetSelector`.
 
-**Ordering.** The returned list is **ordered by the canonical board order** already locked for death/trigger resolution (§4 ⑦): current player `board[0..n]` → opponent `board[0..n]` → neutral zone by index, with heroes slotted by the selector's own definition. Ordered, not unordered, because sequential application (damage → interleaved death checks) is order-sensitive and determinism demands a fixed order. Selectors never invent a second ordering.
+**Ordering.** The returned list is **ordered by the canonical board order** already locked for death/trigger resolution (§4 ⑦): current player `board[0..n]` → opponent `board[0..n]` → neutral zone by index, with heroes slotted by the selector's own definition. Ordered, not unordered, because sequential within-action application (per-target damage, `DamageTakenEvent` emission order, keyword pulls) is order-sensitive and determinism demands a fixed order. (Deaths are no longer interleaved per hit — they settle at ⑦, amendment B — but the per-target application order still must be fixed.) Selectors never invent a second ordering.
 
 **Three consumption modes** — a selector's candidate set covers every targeting feature with no new mechanism:
 
 | Mode | How the effect consumes `Select(context)` |
 |---|---|
-| **Auto-hit** (AoE) | Enqueue one concrete action per entity, in returned order — e.g. Flamestrike enqueues a `DealDamageAction` per `AllEnemyMinions` entry. Pure: no RNG. |
+| **Auto-hit** (AoE) | Enqueue **one** action carrying the **`ITargetSelector` reference** (the same one-action-carries-selector pattern as Random-K below); the stage-④ handler evaluates it over the current board and applies the effect to every result, in returned order — e.g. Flamestrike is a *single* `DealDamageAction` carrying `AllEnemyMinions`. Pure: no RNG. **One action ⇒ one ③′ declaration ⇒ one interception/pre-damage window** for the whole AoE (with the targets as that window's selector), rather than N per-entity actions raising N windows (see §3 "Reactive…", "Batching"). The handler still emits one per-target event (e.g. a `DamageTakenEvent` each). |
 | **Random-K** | Enqueue **one** action carrying the **`ITargetSelector` reference** (not a pre-computed pool) + `k`; the **stage-④ handler evaluates the selector against the *current* board, then draws K** using that action's epoch-derived `IRandom`. Carrying the selector rather than a frozen `EntityId[]` keeps selection both pure *and* current — if a candidate is mortally wounded or removed between enqueue and the draw, the ④ evaluation reflects it (and the card chooses the right `All…/Alive…/Dead…` family to decide whether the dying still count). Randomness is consumed only at ④, preserving the Item-6 invariant verbatim and keeping each draw attributable to one action's epoch (clean for the `StabilizationAbortReport`). |
 | **Player-choice** (Discover, mid-effect targeting) | Issue `StartChoiceAction` with `options =` the candidate set → existing `PendingChoice` (§4). The selector *feeds* the choice; it does not subsume it — "compute targets" and "interrupt for player input" stay separate concerns. |
 
 **Player-target legality is unified into the same primitive.** A card/effect requiring a player-supplied target declares a `(selector, cardinality)` pair. The §4 ③ validator's *"is a legal target type for this card"* check is then exactly: **`chosen ∈ selector.Select(context)`** (plus the cardinality/optionality rule) → `InvalidTarget` otherwise. The *same* `AllEnemyMinions` selector that an AoE uses to hit every enemy is what a single-target spell uses to define its legal targets — so previewed legality (client highlighting), validation, and effect resolution can never disagree. This replaces the spec's earlier hand-wave with one source of truth (parallel to how §4 ③ made the validator the single source of truth for action legality).
 
 **JSON encoding** of selector references in card definitions is a `DefaultCardHandler` detail, *not* part of this spec — same treatment as the condition tree.
+
+### Reactive Triggers, Interventions & Interception
+
+This subsection unifies Secrets, the locked Intervention system, and the dying-window (amendment B ref R1) into **one** mechanism over `ITrigger`. Decided 2026-06-04 (Fireplace menu point D — the secrets/armed-reactive question); see the borrow-list note for the full derivation. Three ideas: **zone-scoped hosting**, **two hook phases**, and **interception as ordinary effects + re-resolution**.
+
+**1 — A trigger is live by virtue of its host's zone (aura-like).** An `ITrigger` is registered by `ICardHandler` when its host enters a zone and unregistered when it leaves — exactly as a board minion's triggers register in `OnSummon` and drop on death. The same lifecycle simply runs on **other zones**:
+
+| Host zone | Registered on | What a fired trigger does | Status |
+|---|---|---|---|
+| **board** (minion) | `OnSummon` (entering board) | ordinary reaction | existing |
+| **hand** (card) | the `DrawCard`/`GiveCard` handler (entering hand), dropped on play/discard/return | opens a single-response **intervention** window for the owner (play it / skip) | **this amendment** |
+| **secret zone** (card) | the play-to-secret handler | **auto-resolves** without a prompt (a Secret) | **deferred** (auto flavour + zone + visibility/cost — see end) |
+
+All of this obeys the existing invariants unchanged: registration happens inside an action handler (④), so every reactive trigger has a `birthEpoch` and the creation-epoch filter (§3 `IEventBus`) stops a freshly-drawn card from reacting to the very event that drew it; the bus still carries only `ITrigger`. The hand is "armed" simply by holding the card — there is no separate arming step, and **what opens a window is precise and inspectable**: a card in hand whose live reactive trigger matched. This realises the locked Intervention scope ("play one card / skip") literally — the window only ever offers a card *designed* with a reactive trigger.
+
+**2 — Two hook phases; that is the whole taxonomy.** Every action has a **pre** phase and **post** events:
+
+- **Pre — the declaration phase (`ActionDeclaredEvent`, stage ③′).** A trigger here fires *before* the action resolves and may **intercept** it (prevent / alter). This is the held-action / suspend-resume kind.
+- **Post — the regular events.** A trigger here reacts *after* the fact and cannot prevent — it just acts. This **includes `MinionMortallyWoundedEvent` / `HeroMortallyWoundedEvent`**: a "save" reaction on those is an ordinary post-reaction whose *before-finalization* timing is a gift of the cadence deferral (⑦ death / ⑧ win are settle stages — §4), **not** special machinery. "Consequence-deferral" is therefore not a third category; it is a post-reaction that exploits the deferral. **Post-reaction player windows batch**: matches accumulate through a cascade and open **one** window per (card, settle) before ⑦, with the matched set as the card's selector — so an AoE hitting N minions never opens N windows (see §4 "Batching"). Deterministic, no-choice reactions belong in the auto/secret flavour and open no window at all.
+
+**3 — Interception is ordinary effects + re-resolution — there is no "disposition vocabulary."** An interception response runs as **normal effects** (summon, grant a keyword, gain armor, return-to-hand, deal damage — anything a card can do). The held action is then **re-resolved through full validation (②③)**, so almost every "alteration" emerges for free:
+
+- grant Divine Shield to the defender → on resume the shield (a keyword pull at the damage moment) absorbs the hit;
+- grant Poisonous to the defender → its resumed counter-damage destroys the attacker;
+- gain armor / a standing damage modifier → read at the damage moment, no action edit;
+- destroy / return / silence the attacker, or summon a **Taunt** token → on resume the held action **re-validates and either fizzles or is forced to the Taunt** by the ordinary rules.
+
+Only **two** manipulations cannot be expressed as board-state mutation, and they are the *entire* irreducible surface — not a vocabulary:
+
+- **cancel** — drop the held action (Counterspell: nothing on the board invalidates a legally-cast spell);
+- **retarget** — substitute the held action's target *in place*, without re-declaring it (Misdirection's random redirect, Spellbender's spell redirect — not derivable from Taunt).
+
+**Completeness rests on one invariant:** *anything a card can intercept is a discrete action* (so it has a declaration phase). Intrinsic, deterministic modifiers (the Divine Shield keyword, armor) are **pulled inline at resolution**, never declared — consistent with the `IKeyword` pull model (§3 `IKeyword`). So one interception point has **two realisations**: intrinsic *pulls* (hot-path, no window) and extrinsic *subscriptions* (secrets / interventions, possibly windowed).
+
+**This subsumes damage prevention (menu point A — now closed).** Ice-Block-style "prevent the fatal hit, no side-effects" is an **interception on `DealDamageAction`** (`cancel`, or grant the target immunity, at its declaration) — *not* a `HeroMortallyWoundedEvent` post-reaction, which would let the damage (and its lifesteal/reflect side-effects) register before undoing the death. Three things make this universal and deterministic:
+
+- **All damage flows through `DealDamageAction`, combat included.** `AttackAction` *enqueues* `DealDamageAction`s for the two combatants rather than applying damage inline, so the predamage declaration covers **every** source — Ice Block / redirect / prevention stops combat damage too, not just spells.
+- **AoE damage is one declaration.** An auto-hit AoE is a *single* selector-carrying `DealDamageAction` (§3 `ITargetSelector`), so it raises **one** ③′ window with the targets as its selector — the pre-damage twin of post-reaction batching (one window for 7 minions), differing only in that it fires **immediately, before the hits** (pre-damage cannot defer to the settle). Per-target protection inside it is a grant (immune / Divine Shield) read at ④, not a new op.
+- **④ damage-modifier precedence (pinned).** After ③′ interception, the handler computes each target's effective amount in a fixed order: **(1)** base `amount` (spell-damage bonus already baked at enqueue, §3 `IEffect`); **(2)** multiplicative modifiers (double-damage); **(3)** flat reductions, floored at 0; **(4)** caps; **(5)** **immune** → 0, stop (no shield break, no health loss); **(6)** **Divine Shield** → if still > 0, break it (`DivineShieldBrokenEvent`) and set 0; **(7)** apply to `currentHealth`, compute overkill, emit `DamageTakenEvent`, and if `≤ 0` emit `MinionMortallyWoundedEvent` (hero → `HeroMortallyWoundedEvent`). Only the baked spell-damage bonus (1) and Divine Shield / events (6–7) exist in v1; steps 2–4 are the slots future modifiers drop into, in this order, so stacking stays deterministic and replayable.
+
+**Still deferred (game-feel, do not block this lock):** the **Secret** (auto-resolve) flavour and its zone + one-per-name/max/own-turn rules; **visibility** (a hand-live reactive trigger is *hidden* by default — MTG-instant "gotcha" vs. HS-secret telegraph); **cost timing** (free vs. pay-on-response); and the **marked-for-destruction scope** of dying-window saves (a destroy-marked minion cannot be healed/inverted back above 0). *(Batching is now resolved — see §4 "Batching".)* See the borrow-list note.
 
 ### `IAura`
 
@@ -689,7 +734,7 @@ interface IRandom {
 - **An *input* is anything submitted via `Submit`** — not only deliberate player moves but also **timeout / forfeit / disconnect-injected actions** (auto-`EndTurn`, auto-skip, auto-resolve a `PendingChoice`). These are *external nondeterminism* — they depend on wall-clock time, not game state, so they are **not** regenerable and **must** appear in the input log like any other action. (The timer that injects them is a Game Server concern; GameLogic only requires that they enter through the same `Submit` seam and are logged.) "Player actions only" would be subtly wrong the first time a turn times out.
 - **Single, total-order input stream** — one sequence per game, not per-player. The engine processes inputs in a single total order; per-player streams would reintroduce interleaving ambiguity.
 - **Ruleset-version pinning** — a command-log replay re-runs engine logic + card `definition` JSON, so it is only valid against the **same engine + card-definition version** it was recorded under (the classic command-log-replay fragility across patches). The replay package carries a ruleset/content version stamp.
-- **Command log vs. event log — two artifacts, two jobs.** The **command/input log is canonical**: compact, re-simulatable, the source of truth (but version-fragile per above). The **event log is the client wire format**, spectator/late-join stream, and version-robust archive: self-contained state deltas the client renders with **no game logic**, but *not* re-simulatable. The asymmetry: the **event log is derivable from the command log + seed, never the reverse** (events record outcomes, not the inputs/rolls that produced them) — so the command log is the richer artifact and the event log the safer/self-contained one.
+- **Command log vs. event log — two artifacts, two jobs.** The **command/input log is canonical**: compact, re-simulatable, the source of truth (but version-fragile per above). The **event log is the client wire format**, spectator/late-join stream, and version-robust archive: self-contained state deltas the client renders with **no game logic**, but *not* re-simulatable. (The event log is exactly the **handler-produced deltas**; transient bus signals — `ActionDeclaredEvent` — are excluded, as they carry no state change. See §2B "Bus ⊋ log".) The asymmetry: the **event log is derivable from the command log + seed, never the reverse** (events record outcomes, not the inputs/rolls that produced them) — so the command log is the richer artifact and the event log the safer/self-contained one.
 
 ### Deterministic Ordering
 
@@ -702,6 +747,7 @@ interface IRandom {
 | Deathrattle before Reborn | `DeathResolutionService` — Phase 3 runs only after all Phase 2 actions complete |
 | New deaths during deathrattles | `DeathResolutionService` — deferred to next wave, not resolved mid-wave |
 | Resolution cadence | `GameEngine` — one action at a time; ①–⑥ run per action, draining the queue; ⑦ death + ⑧ win fire **only when the queue empties** (cascade settled), then loop. Deaths are batched at the settle point, never mid-cascade — so triggered reactions resolve before removals (amendment B) |
+| Interception (declaration window) | `GameEngine` — stage ③′: an action is suspended before ④ **at most once** (depth-1 cap); the response resolves fully (FIFO), then the held action re-validates and executes-or-fizzles. A single suspend/resume of one action — the only deviation from FIFO, never a general LIFO stack (point D) |
 | Randomness | `IRandom` — per-action stream derived from `mix(rngSeed, currentActionEpoch)`; consumed only in stage ④ handlers; draw order fixed by the rows above |
 
 ---
@@ -738,10 +784,20 @@ Precondition checks. Returns `Rejected(ActionRejection)` with the matching code 
 - Mana affordability: `effectiveCost ≤ player.mana` → `NotEnoughMana`
 - Target validity: target is alive, is not stealthed (for opponent spells/attacks), and is a **member of the card/effect's declared target selector's output** (`chosen ∈ selector.Select(context)`, plus the cardinality/optionality rule — see §3 `ITargetSelector`) → `InvalidTarget` / `TargetStealthed`. The same selector defines the client's legal-target highlighting, so preview and validation cannot drift.
 - Taunt enforcement: if opponent has Taunt minions on board, attacks must target one of them → `MustTargetTaunt`
-- Attack eligibility: `canAttack = true` (else `AttackerCannotAttack`), `isFrozen = false` (else `AttackerFrozen`), `attacksUsedThisTurn < attacksAllowedThisTurn` (else `AttackerExhausted`)
+- Attack eligibility: attacker is **alive** — `currentHealth > 0` and not destroy-marked (else `AttackerNotAlive`), `canAttack = true` (else `AttackerCannotAttack`), `isFrozen = false` (else `AttackerFrozen`), `attacksUsedThisTurn < attacksAllowedThisTurn` (else `AttackerExhausted`). The aliveness check is what makes a **mortally-wounded attacker fizzle on re-validation**: a "destroy / return the attacker" interception (§3) leaves the attacker ≤0 / destroy-marked but on board (death is deferred to ⑦), and the held attack, re-entering ③ on resume, is rejected here before it can swing.
 - Board space: player board has fewer than 7 minions before summoning → `BoardFull`
 
 **Validation is a pure, standalone-invokable predicate.** Stages ② and ③ together form a side-effect-free function `(action, state) → Ok | Rejection` (where `Rejection` is the `ActionRejection` of §2C) — no mutation, no dispatch (④), no events. It is the **single source of truth for legality**: `Submit` runs it before ④, and any "is this action legal?" / "what actions are legal?" query — a future `GetLegalActions(playerId)`, bot move generation, or client pre-flight (greying out unaffordable cards / illegal targets) — **must call this same predicate** rather than re-deriving legality. This guarantees previewed/enumerated legality can never drift from what `Submit` actually accepts. (The positive-enumeration API itself — `GetLegalActions`, via brute-force-then-filter over candidate actions — is deferred to the future bot-support epic; only the standalone-predicate seam is part of the core.)
+
+### ③′ Declaration & Interception Window
+
+A pre-execution checkpoint inserted between validation (③) and dispatch (④) — it does **not** renumber ④–⑨. (Decided 2026-06-04, Fireplace point D; the model lives in §3 "Reactive Triggers, Interventions & Interception".) For every action that reaches dispatch:
+
+1. Publish **`ActionDeclaredEvent { action }`** — the universal pre-execution signal (one event type for all actions; subscribers filter on the carried action's type/params). Most actions have no matching reactive trigger and pass straight to ④.
+2. If a reactive trigger fired and its host **auto-resolves** (a Secret — deferred flavour), its response resolves inline here (no halt). If the host is a **hand card** offering a player response, the engine **suspends** the action — stores it as `pendingIntervention.heldAction`, sets `phase = PendingIntervention`, and opens the single-response window (§4 "PendingIntervention Interruption").
+3. **Depth-1 cap:** while an interception response is resolving, no further declaration windows open — a response cannot itself be intervened. (Auto-resolving reactions still chain in FIFO order; only *player windows* are capped.) This bounds the otherwise-MTG-style stack to a single hold.
+
+A held action is **declared once**: when it resumes (after the response) it re-enters ③ for re-validation but is **not** re-published to ③′. The declaration phase is the only deviation from the otherwise-FIFO cadence — a single suspend/resume of one action, never a general LIFO stack. See §3 for what a response may do (ordinary effects + re-resolution; only `cancel`/`retarget` touch the held action directly).
 
 ### ④ Dispatch → `IActionHandler`
 
@@ -795,9 +851,11 @@ A regression scenario built from a report asserts: submitting `triggeringAction`
 
 **Settle stage — runs immediately after ⑦**, at the same queue-empty settle point. If any hero has health ≤ 0: if both ≤ 0 the game is a draw, otherwise the other player wins. `GameEndedEvent` is published and `phase` is set to `Ended`.
 
+Mirroring ⑦'s pending-death window: a hero that crosses to ≤0 **mid-cascade** publishes **`HeroMortallyWoundedEvent`** at that moment (from the damaging action's ④), but the loss is **not** finalized until this settle — so a post-reaction save (heal-above-0 / immune, §3) enqueued onto the still-draining queue resolves first, and ⑧ then re-reads actual hero health and finds it survived. This gives heroes the same dying-window the death wave gives minions; simultaneous mutual lethality still settles here as a draw.
+
 ### ⑨ Dequeue / Drive Loop
 
-The loop driver. **If the action queue is non-empty**, pull the next action and return to ① (continue draining the cascade through ①–⑥). **If the queue is empty**, run the settle stages ⑦ (death wave) then ⑧ (win check); the death wave may enqueue actions (deathrattles, reborns), so if the queue is non-empty again, resume draining — otherwise the cascade is fully settled and the engine awaits the next player action. (A player-submitted action is just the next thing dequeued, starting a fresh cascade.)
+The loop driver. **If the action queue is non-empty**, pull the next action and return to ① (continue draining the cascade through ①–⑥). **If the queue is empty**, first open any **pending batched post-reaction windows** (one per reactive card with accumulated matches — §4 PendingIntervention "Batching"); a response enqueues actions, so the queue may refill and drain again before this settle completes. With no windows left to open, run the settle stages ⑦ (death wave) then ⑧ (win check); the death wave may enqueue actions (deathrattles, reborns), so if the queue is non-empty again, resume draining — otherwise the cascade is fully settled and the engine awaits the next player action. (A player-submitted action is just the next thing dequeued, starting a fresh cascade.) **Ordering at the settle: batched windows → ⑦ death → ⑧ win** — so a post-reaction save resolves before the death/win it guards against.
 
 ---
 
@@ -832,15 +890,16 @@ When an effect issues `StartChoiceAction`:
 
 ### PendingIntervention Interruption
 
-When the engine issues `StartInterventionAction`:
-- **Pre-halt death rule + R1 exception (amendment B):** before halting, Death Resolution (⑦) runs to settle pending deaths — **except for a dying-window intervention** (one keyed to the pending-death window itself, e.g. Intervention × lethal, ref R1). There the mortally-wounded minion must stay on the board for the responder to act on, so deaths are **not** pre-resolved; the held card's effect (e.g. inverting it to `currentHealth > 0`) is processed before the next settle, where the death wave then simply does not collect it. *(What opens a dying-window intervention — a general engine rule vs an armed/secret-style card — and batching of multiple simultaneous woundings are deferred to the Secrets / armed-reactive-trigger discussion; see the borrow-list note.)*
-- `GamePhase` → `PendingIntervention`
-- `heldAction` stored in `GameState.pendingIntervention` — not yet processed
-- Timeout timer starts
-- Only `SubmitInterventionAction` from the responding player is accepted
-- On response: if a card was played, it is processed first (full pipeline), then `heldAction` is processed
-- On skip or timeout: `heldAction` is processed directly
-- `GamePhase` → `InProgress`
+A single-response window, **opened by a live reactive trigger on a hand card** that matched (§3 "Reactive Triggers, Interventions & Interception") — never a general engine rule. It resolves one of two ways, by which phase the trigger hooked. (Throughout: `phase → PendingIntervention`; timeout timer starts; only `SubmitInterventionAction` from the responding player is accepted; timeout = an injected skip, logged as an input per Item 13; `phase → InProgress` at the end.)
+
+**Declaration-hold (pre-phase — `heldAction` present).** Opened at ③′ when a hand trigger fires on `ActionDeclaredEvent`. The triggering action is suspended into `pendingIntervention.heldAction`.
+- On **play**: the response card resolves first (full pipeline). It runs ordinary effects (summon, grant keyword, gain armor, …) and may `cancel` or `retarget` the held action. Then the held action **resumes, re-validated (②③)** against the post-response board: still legal → executes (④); now illegal (attacker dead/returned, target gone, forced to a Taunt) or `cancel`led → it **fizzles** — dropped, not executed (no `ActionRejection`; no client awaits it). It is **not** re-declared (③′ fires once — no redirect/secret loops).
+- On **skip / timeout**: the held action resumes and re-validates directly.
+
+**Post-reaction (post-phase — `heldAction` null).** A hand trigger that fires on a regular event (including the cadence-deferred `MinionMortallyWoundedEvent` / `HeroMortallyWoundedEvent`) does **not** halt per-event. Instead it **accumulates** into a per-card pending-response record `{ cardId, respondingPlayerId, matched: [...] }` — `matched` appending the event's subject each time the trigger fires during the cascade. **Windows open batched, at the settle** (see "Batching" below): the response resolves there, **before** ⑦/⑧, so a save (invert a mortally-wounded minion to `currentHealth > 0`, heal a hero above 0) lands before the death/win finalizes. On **skip / timeout** nothing happens and the settle proceeds. There is no held action to resume.
+- **Pre-halt death rule + R1 exception (amendment B):** before halting for a choice/intervention, Death Resolution (⑦) settles pending deaths so the responder never acts against a board where mortally-wounded minions still linger — **except** for a post-reaction save keyed to that very window (R1), where the mortally-wounded minion must remain on board for the response to act on; deaths are **not** pre-resolved, and the wave simply does not collect a minion the response lifted back above 0.
+
+**Batching — one window per (reactive card, settle), with the matched set as the selector.** A single AoE produces many sub-events (one selector-carrying `DealDamageAction` → many `DamageTakenEvent`s, one per target), so a per-event post-reaction window would halt N times. It does not. Post-reaction matches **accumulate** through the cascade; when the queue drains, the engine opens **at most one** `PendingIntervention` window per pending reactive card, **before ⑦**. The window's candidate set is that card's `matched` list **∩ its declared `(selector, cardinality)` family** (the family's `All…/Alive…/Dead…` choice decides whether a mortally-wounded match is offered — inclusive for a "save" card). The player picks `cardinality` targets from that set, or skips; `SubmitInterventionAction` carries the choice and is validated by the ordinary §4 ③ membership check (`chosen ∈ matched`). Example: an AoE damaging **7** friendly minions while the responder holds a single-use "heal one minion +2 on `DamageTakenEvent`" card → **one** window offering all 7 (the dying ones included), pick one to heal/save. *(Declaration-hold windows do not need accumulate-at-settle: each declared action is one `ActionDeclaredEvent`. A "counter/redirect the spell" hooks the one `PlayCardAction`; a **pre-damage** card hooks the AoE's **single selector-carrying `DealDamageAction`** (§3 `ITargetSelector` auto-hit) — one window for the whole AoE either way, fired immediately rather than deferred to the settle.)* If multiple reactive cards are pending at the same settle, their windows open in a deterministic order (responder — current player first — then the card's hand order). Only **player-choice windows** batch this way; **auto reactions** (secrets, board triggers) still fire inline per-event in FIFO. A deterministic reaction with no decision (e.g. "heal *it* for 2", no target choice) therefore belongs in the **auto/secret flavour**, where it simply enqueues one heal per match and opens no window at all.
 
 ---
 
