@@ -53,7 +53,8 @@ cardsPlayedThisTurn: int      // Combo tracking
 ### MinionOnBoard
 
 ```
-minionId, cardId: string
+minionId: string
+definitionKey: string         // the SOLE link into the card-definition library — and to the ICardHandler that registers this minion's triggers/deathrattle/keyword-hooks (see note at end of block). NOT a Card.id: playing a card never transfers its id; tokens have a definitionKey but no Card.id (Identity section).
 ownerId: string?              // null = neutral zone
 baseAttack, baseHealth: int   // immutable, from card definition
 enchantments: StatModifier[]  // permanent buffs; Silence clears all
@@ -64,7 +65,7 @@ currentHealth: int            // takes damage; healed up to maxHealth. ≤0 (or 
 keywords: string[]            // maintained EFFECTIVE view = intrinsicKeywords ∪ grantedKeywords ∪ auraKeywords; resolved to IKeyword at runtime; what the engine queries. (Keyword analog of effectiveTribes.)
 intrinsicKeywords: string[]   // from the card definition, seeded at summon; Silence clears
 grantedKeywords: string[]     // PERMANENT non-aura grants after summon; retained across a RetainEnchantments bounce; Silence clears. Aura grants are NOT here.
-auraKeywords: string[]        // aura-granted, recomputed each aura pass; never persisted, never bounce-retained; Silence does not touch (they recompute). v1: DECLARATIVE keywords only — see "Unaddressed Features".
+auraKeywords: string[]        // aura-granted, recomputed each aura pass; never persisted, never bounce-retained; Silence does not touch (they recompute). ANY keyword may be aura-granted — keywords are pulled from the effective view, never a bus subscription (§3 IKeyword; keyword-collapse 2026-06-02).
 intrinsicTribes: Tribe        // copied from the card's tribes at summon; immutable; survives Silence
 grantedTribes: Tribe          // permanent tribe grants ("becomes a Beast"); Silence clears to Tribe.None
 auraTribes: Tribe             // recomputed each aura pass; never persisted (parallels auraAttackBonus); drops when the aura leaves
@@ -76,12 +77,14 @@ attacksAllowedThisTurn: int   // default 1; Windfury sets to 2 on summon
 summonOrder: int              // monotonically increasing per session; used for trigger fire ordering
 isFrozen, isDamaged: bool
 rebornAvailable: bool         // the one-time Reborn charge — distinct from the "reborn" keyword tag, which persists. Initialized at summon to keywords.Contains("reborn"); the reborn-summon path summons with it false; consuming it (NOT the keyword) is what reborn does. See §4 ⑦.
+// TRIGGERS — not stored as fields. This minion's ITrigger(s), Deathrattle, and keyword-hooks are registered into IEventBus by its ICardHandler (resolved via definitionKey) at summon (OnSummon, ④) and dropped when it leaves the board. Live by virtue of the board zone (§3 "Reactive Triggers, Interventions & Interception"). The bus carries only ITrigger; keywords are pulled from the effective `keywords` view (§3 IKeyword), not subscribed.
 ```
 
 ### Card
 
 ```
 id, name: string
+definitionKey: string         // the only cross-entity link into the card-definition library (Identity section); distinct from `id`, which is the per-instance allocator
 type: CardType                // Minion | Spell | Weapon | HeroPower
 rarity: CardRarity
 tribes: Tribe                 // [Flags] intrinsic taxonomy from the definition; Tribe.None = tribeless (valid). Gameplay tag; NOT cleared by Silence. See "Tribes" below.
@@ -93,6 +96,7 @@ effectiveCost: int            // max(0, baseManaCost + Σmodifiers.costDelta)
 definition: JsonElement       // has "normal" and "inverted" sections
 handlerKey?: string
 isInverted: bool              // intrinsic state; preserved across all minion↔card transitions
+// REACTIVE TRIGGERS — while this card sits in a trigger-hosting zone, its ICardHandler registers its reactive ITrigger(s) into IEventBus, live by zone and dropped on play/discard/return: in HAND → a player-choice intervention window; in the SECRET zone → auto-resolve. (Most cards have none and just sit inert in hand.) See §3 "Reactive Triggers, Interventions & Interception".
 ```
 
 ### StatModifier (unified — used on both Card and MinionOnBoard)
@@ -126,15 +130,19 @@ GraveyardWeapon : GraveyardEntry
 ### Supporting types
 
 ```
-WeaponOnHero        — cardId: string, attack: int, durability: int
-HeroPower           — cardId: string, manaCost: int, definition: JsonElement, handlerKey?: string
+WeaponOnHero        — definitionKey: string, attack: int, durability: int
+HeroPower           — definitionKey: string, manaCost: int, definition: JsonElement, handlerKey?: string
 TurnState           — activePlayerId: string, number: int
 TimerState          — secondsRemaining: int
 PendingChoice       — waitingPlayerId: string, choiceType: ChoiceType, options: ChoiceOption[],
                        context: JsonElement  // stores effect continuation
 PendingIntervention — respondingPlayerId: string, heldAction: GameAction?, timeoutSeconds: int  // heldAction null = post-reaction window (nothing held — e.g. a dying-window save)
 MulliganState       — player1Completed: bool, player2Completed: bool
-CardPlayContext     — card: Card, playerId: string, targetId: string?, state: GameState (read-only)
+EffectContext       — sourceId: string, sourcePlayerId: string, targetId: string?,
+                       state: GameState (read-only), SpellDamageBonus: int
+                       // BASE resolution context — passed to IEffect.Execute, ITargetSelector.Select, and keyword pulls (§3). `sourceId` is the unified entity ref (minion OR card) and `sourcePlayerId` its controller, set by the enqueuer from the action's own source fields (§3 "Source Attribution"). Id-based precisely because the source may be a minion, not a card.
+CardPlayContext : EffectContext — + card: Card
+                       // SUPERSET for ICardHandler.OnPlay only: adds the resolved Card the handler reads its `definition` from. Here card.id == sourceId and playerId == sourcePlayerId; it inherits targetId/state/SpellDamageBonus, so OnPlay can pass itself to the IEffects it dispatches and bake spell-damage at enqueue.
 ```
 
 ### Tribes
@@ -221,6 +229,8 @@ Actions are immutable commands (input layer). Events are immutable facts (output
 
 All actions carry a nullable `SourcePlayerId` (null = system-issued) and a `RequestedAt` timestamp. The engine infers entity type (minion vs hero vs card) from the ID at processing time — actions do not carry type discriminators.
 
+**ID convention:** a `cardId` / `minionId` / `targetId` field names an **existing instance** in a zone (a `Card.id`, a `MinionOnBoard.minionId`, …); a `definitionKey` field names a **library key to fabricate or summon from**, where no instance exists yet (summoning a token, generating a card into hand, equipping a weapon, transforming). The two are never interchangeable — see "Card and Minion Identity" (§1).
+
 **Player-initiated:**
 
 | Action | Key fields |
@@ -231,7 +241,7 @@ All actions carry a nullable `SourcePlayerId` (null = system-issued) and a `Requ
 | `EndTurnAction` | playerId |
 | `SubmitMulliganAction` | playerId, cardIdsToKeep[] |
 | `SubmitChoiceAction` | playerId, choiceId, selectedOptionId |
-| `SubmitInterventionAction` | playerId, cardId? (null = skip), targetIds[]? (the response card's chosen targets — for a batched post-reaction window, picked from the window's candidate set = the accumulated `matched` set; validated by the §4 ③ membership check) |
+| `SubmitInterventionAction` | playerId, cardId? (null = skip), targetIds[]? (the response card's chosen targets — for a post-reaction window, picked from the window's candidate set = the `matched` set batched from the triggering action's events at ⑥′; validated by the §4 ③ membership check) |
 | `SurrenderAction` | playerId |
 
 **System/effect-issued** — emitted by `IEffect`/`ITrigger` implementations; processed through the same pipeline as player actions:
@@ -239,15 +249,15 @@ All actions carry a nullable `SourcePlayerId` (null = system-issued) and a `Requ
 | Action | Key fields |
 |---|---|
 | `DrawCardAction` | playerId, sourceId? |
-| `DealDamageAction` | target: `entityId` **or** `ITargetSelector` (AoE — evaluated at ④ over the current board), amount, sourceId — **the one channel for all damage, combat included** (see §3 "Reactive…"). A selector-carrying instance is a single declared action → a single ③′ interception window |
+| `DealDamageAction` | target: `entityId` **or** `ITargetSelector` (AoE — evaluated at ④ over the current board), amount, sourceId — **the one channel for all damage, combat included** (see §3 "Reactive…"). A selector-carrying instance is a single declared action → a single ③′ interception window. **Combat = two independent instances** (attacker strike + defender retaliation), each separately declared and processed sequentially — *not* one atomic unit (§3, 2026-06-06) |
 | `HealAction` | targetId, amount, sourceId |
 | `DestroyMinionAction` | minionId, sourceId? |
-| `SummonMinionAction` | cardId, ownerId?, boardPosition, sourceId? |
-| `EquipWeaponAction` | playerId, cardId, sourceId? |
+| `SummonMinionAction` | definitionKey, ownerId?, boardPosition, sourceId? |
+| `EquipWeaponAction` | playerId, definitionKey, sourceId? |
 | `DestroyWeaponAction` | playerId, sourceId? |
-| `GiveCardAction` | playerId, cardId, sourceId? |
+| `GiveCardAction` | playerId, definitionKey, sourceId? |
 | `ReturnToHandAction` | minionId, policy: MinionToCardPolicy, sourceId? |
-| `TransformMinionAction` | minionId, newCardId, sourceId? |
+| `TransformMinionAction` | minionId, newDefinitionKey, sourceId? |
 | `InvertTargetAction` | targetId, sourceId? |
 | `UnInvertTargetAction` | targetId, sourceId? |
 | `BuffMinionAction` | minionId, attackDelta, healthDelta, sourceId |
@@ -256,7 +266,7 @@ All actions carry a nullable `SourcePlayerId` (null = system-issued) and a `Requ
 | `ModifyManaAction` | playerId, delta, sourceId? |
 | `ShuffleDeckAction` | playerId, sourceId? |
 | `DiscardCardAction` | playerId, cardId? (null = random), sourceId? |
-| `SpawnNeutralMinionAction` | cardId, position?, sourceId? |
+| `SpawnNeutralMinionAction` | definitionKey, position?, sourceId? |
 | `StartChoiceAction` | waitingPlayerId, choiceType, options[], context |
 | `StartInterventionAction` | respondingPlayerId, heldAction? (null = post-reaction window — nothing held, e.g. a dying-window save), timeoutSeconds |
 
@@ -294,7 +304,7 @@ All events carry an `OccurredAt` timestamp and an `originEpoch: int` (the `curre
 | Event | Key fields |
 |---|---|
 | `MinionSummonedEvent` | minion, ownerId? (null = neutral zone) |
-| `MinionMortallyWoundedEvent` | minionId, sourceId, cause — fires the instant a minion enters pending-death (currentHealth ≤0 from damage, maxHealth ≤0 from aura loss, or a destroy-mark), **before** the death-wave settle removes it; distinct from `MinionDiedEvent` (Phase-1 removal). The hook for dying-window reactions (e.g. Intervention × lethal, amendment B ref R1). |
+| `MinionMortallyWoundedEvent` | minionId, sourceId, cause — fires the instant a minion enters pending-death (currentHealth ≤0 from damage, maxHealth ≤0 from aura loss, or a destroy-mark), **before** the death-wave settle removes it; distinct from `MinionDiedEvent` (Phase-1 removal). The hook for dying-window reactions — e.g. a **save-from-lethal** intervention, where a player responds to lethal damage to rescue the minion before the settle removes it (the "R1" design avenue in the borrow-list note's amendment B). |
 | `MinionDiedEvent` | minionId, snapshot, sourceId, diedOnTurn |
 | `MinionTransformedEvent` | minionId, newCard |
 | `NeutralMinionSpawnedEvent` | minion |
@@ -611,7 +621,7 @@ interface ITargetSelector {
 |---|---|---|
 | `AllEnemyMinions` / `AllFriendlyMinions` / `AllNeutralMinions` / `AllMinions` | **every on-board minion** of that side, **mortally-wounded included** | the effect should treat the doomed-but-present body as real — HS-faithful AoE and board-count effects ("deal 1 to all enemies", "damage equal to enemy minions") |
 | `AliveEnemyMinions` / `AliveFriendlyMinions` / `AliveNeutralMinions` / `AliveMinions` | only minions with **`currentHealth > 0`** | the effect must **not** act on a corpse-in-waiting — e.g. "return a random alive enemy minion to hand", "buff your lowest-health alive minion" |
-| `DeadEnemyMinions` / `DeadFriendlyMinions` / `DeadNeutralMinions` / `DeadMinions` | only the **mortally-wounded** (`currentHealth ≤ 0`, still on board, pending removal) | the effect targets the dying specifically — an **Intervention × lethal** save/finisher (amendment B, ref R1), "destroy all mortally-wounded enemies", counting the doomed |
+| `DeadEnemyMinions` / `DeadFriendlyMinions` / `DeadNeutralMinions` / `DeadMinions` | only the **mortally-wounded** (`currentHealth ≤ 0`, still on board, pending removal) | the effect targets the dying specifically — a **save-from-lethal** intervention or finisher, responding to lethal damage to rescue (or pick off) a dying minion (the "R1" avenue, amendment B), "destroy all mortally-wounded enemies", counting the doomed |
 
 Each `Alive…` singleton is exactly `Filter(<corresponding All…>, currentHealth > 0)` and each `Dead…` is `Filter(<corresponding All…>, currentHealth ≤ 0)`, surfaced as named singletons for ergonomics. **Heroes have no mortally-wounded state** — a 0-health hero ends the game at §4 ⑧ rather than lingering — so there is no `Alive`/`Dead` hero/character variant. **Graveyard minions are *not* covered here:** an already-removed minion (resurrection / "died this turn" pools) is not a board target — selecting from the graveyard to *summon* is a separate primitive, not an `ITargetSelector`.
 
@@ -631,7 +641,7 @@ Each `Alive…` singleton is exactly `Filter(<corresponding All…>, currentHeal
 
 ### Reactive Triggers, Interventions & Interception
 
-This subsection unifies Secrets, the locked Intervention system, and the dying-window (amendment B ref R1) into **one** mechanism over `ITrigger`. Decided 2026-06-04 (Fireplace menu point D — the secrets/armed-reactive question); see the borrow-list note for the full derivation. Three ideas: **zone-scoped hosting**, **two hook phases**, and **interception as ordinary effects + re-resolution**.
+This subsection unifies Secrets, the locked Intervention system, and the dying-window — the **save-from-lethal** beat, where a player responds to lethal damage to rescue a minion before it dies (the "R1" avenue in amendment B) — into **one** mechanism over `ITrigger`. Decided 2026-06-04 (Fireplace menu point D — the secrets/armed-reactive question); see the borrow-list note for the full derivation. Three ideas: **zone-scoped hosting**, **two hook phases**, and **interception as ordinary effects + re-resolution**.
 
 **1 — A trigger is live by virtue of its host's zone (aura-like).** An `ITrigger` is registered by `ICardHandler` when its host enters a zone and unregistered when it leaves — exactly as a board minion's triggers register in `OnSummon` and drop on death. The same lifecycle simply runs on **other zones**:
 
@@ -645,8 +655,8 @@ All of this obeys the existing invariants unchanged: registration happens inside
 
 **2 — Two hook phases; that is the whole taxonomy.** Every action has a **pre** phase and **post** events:
 
-- **Pre — the declaration phase (`ActionDeclaredEvent`, stage ③′).** A trigger here fires *before* the action resolves and may **intercept** it (prevent / alter). This is the held-action / suspend-resume kind.
-- **Post — the regular events.** A trigger here reacts *after* the fact and cannot prevent — it just acts. This **includes `MinionMortallyWoundedEvent` / `HeroMortallyWoundedEvent`**: a "save" reaction on those is an ordinary post-reaction whose *before-finalization* timing is a gift of the cadence deferral (⑦ death / ⑧ win are settle stages — §4), **not** special machinery. "Consequence-deferral" is therefore not a third category; it is a post-reaction that exploits the deferral. **Post-reaction player windows batch**: matches accumulate through a cascade and open **one** window per (card, settle) before ⑦, with the matched set as the card's selector — so an AoE hitting N minions never opens N windows (see §4 "Batching"). Deterministic, no-choice reactions belong in the auto/secret flavour and open no window at all.
+- **Pre — the declaration phase (`ActionDeclaredEvent`, stage ③′).** A trigger here fires *before* the action resolves and may **intercept** it (prevent / alter). This is the held-action / suspend-resume kind. It fires **immediately, per action, mid-cascade** — there is no other coherent timing, since interception must precede that action's ④.
+- **Post — the regular events.** A trigger here reacts *after* the fact and cannot prevent — it just acts. This **includes `MinionMortallyWoundedEvent` / `HeroMortallyWoundedEvent`**: a "save" reaction on those is an ordinary post-reaction whose *before-finalization* timing is a gift of the cadence deferral (⑦ death / ⑧ win are settle stages — §4), **not** special machinery. "Consequence-deferral" is therefore not a third category; it is a post-reaction that exploits the deferral. **Post-reaction player windows batch per action**: the matching events produced by a *single* action open **one** window after that action's ⑤/⑥ (stage ⑥′), with the matched set as the card's selector — so an AoE (one selector-carrying action hitting N minions) opens **one** window, not N, while two *separate* damage actions are two distinct instances and open two windows. The batching unit is one action's events — **never per-event, never per-cascade** (see §4 "Batching"). Deterministic, no-choice reactions belong in the auto/secret flavour and open no window at all.
 
 **3 — Interception is ordinary effects + re-resolution — there is no "disposition vocabulary."** An interception response runs as **normal effects** (summon, grant a keyword, gain armor, return-to-hand, deal damage — anything a card can do). The held action is then **re-resolved through full validation (②③)**, so almost every "alteration" emerges for free:
 
@@ -664,7 +674,7 @@ Only **two** manipulations cannot be expressed as board-state mutation, and they
 
 **This subsumes damage prevention (menu point A — now closed).** Ice-Block-style "prevent the fatal hit, no side-effects" is an **interception on `DealDamageAction`** (`cancel`, or grant the target immunity, at its declaration) — *not* a `HeroMortallyWoundedEvent` post-reaction, which would let the damage (and its lifesteal/reflect side-effects) register before undoing the death. Three things make this universal and deterministic:
 
-- **All damage flows through `DealDamageAction`, combat included.** `AttackAction` *enqueues* `DealDamageAction`s for the two combatants rather than applying damage inline, so the predamage declaration covers **every** source — Ice Block / redirect / prevention stops combat damage too, not just spells.
+- **All damage flows through `DealDamageAction`, combat included.** `AttackAction` *enqueues* `DealDamageAction`s for the two combatants rather than applying damage inline, so the predamage declaration covers **every** source — Ice Block / redirect / prevention stops combat damage too, not just spells. **Combat is two independent damage actions, not one atomic unit (decided 2026-06-06).** The attacker's strike and the defender's retaliation are each first-class actions — each with its own ③′ declaration and its own ⑥′ window — processed **strictly sequentially** through the queue. This is the §4 ⑥′ rule applied verbatim ("one window per action; two instances = two windows"); an atomic single-window combat would be an *exception* to that rule, so it was rejected. Consequences: **(a)** interception/reaction windows are **per recipient** — the natural granularity, since Ice Block / Divine Shield protect one entity, not "a combat" — and a held card may interleave **between** the two hits (e.g. bounce the defender to dodge its retaliation); **(b)** a same-combat reaction sees **per-hit** board state (the defender's "when damaged" reaction fires *before* the retaliation lands) — a deliberate, narrow divergence from HS's apply-both-then-react; **(c)** **base attack is snapshotted at `AttackAction` ④** (HS-style attack lock), while damage *modifiers* are pulled at each damage action's ④ (precedence below). Because death is deferred to ⑦, **both combatants are mortally-wounded-but-on-board until the queue drains, so they die in one shared wave**, and a lethal-but-not-removed defender **still deals its retaliation with full effect** (keywords + source-side modifiers pulled live). This makes **dying-swing retaliation** — Poisonous/Lifesteal on a dying defender, or "retaliation doubled while mortally wounded" — a supported mechanic *by construction*, not special machinery.
 - **AoE damage is one declaration.** An auto-hit AoE is a *single* selector-carrying `DealDamageAction` (§3 `ITargetSelector`), so it raises **one** ③′ window with the targets as its selector — the pre-damage twin of post-reaction batching (one window for 7 minions), differing only in that it fires **immediately, before the hits** (pre-damage cannot defer to the settle). Per-target protection inside it is a grant (immune / Divine Shield) read at ④, not a new op.
 - **④ damage-modifier precedence (pinned).** After ③′ interception, the handler computes each target's effective amount in a fixed order: **(1)** base `amount` (spell-damage bonus already baked at enqueue, §3 `IEffect`); **(2)** multiplicative modifiers (double-damage); **(3)** flat reductions, floored at 0; **(4)** caps; **(5)** **immune** → 0, stop (no shield break, no health loss); **(6)** **Divine Shield** → if still > 0, break it (`DivineShieldBrokenEvent`) and set 0; **(7)** apply to `currentHealth`, compute overkill, emit `DamageTakenEvent`, and if `≤ 0` emit `MinionMortallyWoundedEvent` (hero → `HeroMortallyWoundedEvent`). Only the baked spell-damage bonus (1) and Divine Shield / events (6–7) exist in v1; steps 2–4 are the slots future modifiers drop into, in this order, so stacking stays deterministic and replayable.
 
@@ -686,14 +696,14 @@ record AuraEffect(
     int AttackBonus,
     int HealthBonus,
     Tribe GrantedTribes = Tribe.None,
-    IReadOnlyList<string>? GrantedKeywords = null);  // DECLARATIVE keywords only — see below
+    IReadOnlyList<string>? GrantedKeywords = null);  // any keyword — pulled from the effective view, never a bus subscription (§3 IKeyword); see below
 ```
 
 A minion that reaches ≤0 `maxHealth` due to an aura loss is treated identically to a minion killed by damage.
 
 Aura-granted tribes and keywords flow through `AuraEffect.GrantedTribes` / `GrantedKeywords`: each recalc pass, a minion's `auraTribes` is rewritten to the OR of all `GrantedTribes` targeting it, and its `auraKeywords` to the union of all `GrantedKeywords` targeting it (parallel to `auraAttackBonus`/`auraHealthBonus`) — so both appear/disappear with the aura and never persist.
 
-**Aura recalc grants DECLARATIVE keywords only.** An *active* keyword (one whose `IKeyword.OnApplied`/`OnRemoved` register/unregister event-bus listeners — Lifesteal, Poisonous, Enrage, Windfury, Freeze) cannot be aura-granted, because subscribing/unsubscribing during recalc (stage ⑥) would violate the invariant that *all* subscriptions occur inside action handlers (stage ④ — see §3 `IEventBus` and Item 3). Recalc therefore only rewrites lists; it never touches the bus. Active keywords reach a minion only via `intrinsicKeywords` (subscribed in `OnSummon`, ④) or `grantedKeywords` (subscribed by the granting effect's handler, ④; unsubscribed by the Silence handler, ④). See "Unaddressed Features" for the deferred aura-granted-active-keyword case.
+**Aura recalc only rewrites lists; it never touches the bus.** Keywords are declarative markers pulled from the effective view at the minion's own action moments (§3 `IKeyword`) — no keyword subscribes to the bus — so an aura may grant **any** keyword, with no registration-during-recalc problem, and the grant disappears when the aura leaves. (Keyword-model collapse, 2026-06-02: the earlier active/declarative split — and its restriction that an *active* keyword could not be aura-granted because it would have to subscribe during stage ⑥ — was removed; see §3 `IKeyword` and the removal note under "Unaddressed Features".)
 
 ### `ICardHandler`
 
@@ -747,7 +757,8 @@ interface IRandom {
 | Deathrattle before Reborn | `DeathResolutionService` — Phase 3 runs only after all Phase 2 actions complete |
 | New deaths during deathrattles | `DeathResolutionService` — deferred to next wave, not resolved mid-wave |
 | Resolution cadence | `GameEngine` — one action at a time; ①–⑥ run per action, draining the queue; ⑦ death + ⑧ win fire **only when the queue empties** (cascade settled), then loop. Deaths are batched at the settle point, never mid-cascade — so triggered reactions resolve before removals (amendment B) |
-| Interception (declaration window) | `GameEngine` — stage ③′: an action is suspended before ④ **at most once** (depth-1 cap); the response resolves fully (FIFO), then the held action re-validates and executes-or-fizzles. A single suspend/resume of one action — the only deviation from FIFO, never a general LIFO stack (point D) |
+| Interception (declaration window) | `GameEngine` — stage ③′: an action is suspended before ④ **at most once** (depth-1 cap); the response resolves **immediately** and fully (board/auto triggers fire inline; player windows capped), then the held action re-validates and executes-or-fizzles. A single suspend/resume of one action — the only deviation from FIFO, never a general LIFO stack (point D) |
+| Post-reaction window | `GameEngine` — stage ⑥′: after each action's ⑤/⑥, at most one player window per matched reactive hand card (responder — current player first — then hand order); the response resolves immediately before the queue resumes; deaths **not** pre-settled. Per action — never per-event, never per-cascade |
 | Randomness | `IRandom` — per-action stream derived from `mix(rngSeed, currentActionEpoch)`; consumed only in stage ④ handlers; draw order fixed by the rows above |
 
 ---
@@ -813,9 +824,19 @@ All registered `IAura.Calculate(state)` implementations are run. `auraAttackBonu
 
 Recalculation runs **per action** (⑥, while draining) — after any action that changes board composition, minion stats, or keywords — and also after each action processed in Phase 2 of the death wave and after Phase 3 reborn summons. Keeping aura recalc per-action (cheaper than deferring it) means mid-cascade reactions always read fresh stats; only *death* is deferred to the settle, not aura math.
 
+### ⑥′ Post-reaction Window
+
+A checkpoint inserted after aura recalc (⑥), before the loop driver (⑨) considers the next action — the post-phase twin of ③′, and like ③′ it does **not** renumber the stages. After an action's events are published (⑤) and stats refreshed (⑥), the engine checks for **hand-card post-reactions** whose triggers matched **this action's** events:
+
+1. For each matched reactive hand card, its matched subjects (∩ the card's declared `(selector, cardinality)` family) form the candidate set. The engine opens **one** `PendingIntervention` window per matched card, in deterministic order (responder — current player first — then the card's hand order); `phase → PendingIntervention`, `heldAction = null`.
+2. **Deaths are not pre-settled here** (contrast the type-A pre-halt rule under `PendingChoice` / declaration-hold): a post-reaction is *about* what just happened, so a mortally-wounded subject must stay on the board to be acted on. ⑦ still runs only at the eventual full-drain settle.
+3. The player picks `cardinality` targets or skips; the response **resolves immediately** (see "Response resolution") before the loop resumes.
+
+Auto reactions (secrets, board triggers) do **not** open ⑥′ windows — they fired inline during ⑤ in FIFO order and enqueued their actions. Only player-choice hand cards open a ⑥′ window.
+
 ### ⑦ Death Resolution
 
-**Settle stage — runs only when the action queue has drained to empty** (the cascade started by a top-level action has fully settled), never mid-cascade. While the queue is non-empty the engine stays in ①–⑥, so every triggered reaction resolves first and a mortally-wounded minion remains on the board (targetable, countable, keyword-active — and savable by a dying-window intervention, amendment B ref R1) right up to this point. Then `DeathResolutionService` runs the wave loop:
+**Settle stage — runs only when the action queue has drained to empty** (the cascade started by a top-level action has fully settled), never mid-cascade. While the queue is non-empty the engine stays in ①–⑥, so every triggered reaction resolves first and a mortally-wounded minion remains on the board (targetable, countable, keyword-active — and savable by a dying-window **save-from-lethal** intervention — a player responding to lethal damage to rescue it before removal, the "R1" avenue in amendment B) right up to this point. Then `DeathResolutionService` runs the wave loop:
 
 1. **Collect** all minions with `currentHealth ≤ 0` or marked for destruction. Sort: current player `board[0..n]` → opponent `board[0..n]` → neutral zone by index. If none, exit loop. Otherwise publish `DeathWaveStartedEvent { waveIndex }` (0-based, incremented per wave).
 2. **Phase 1 — Remove & grieve:** for each in sort order — remove from board, add `GraveyardEntry`, publish `MinionDiedEvent`.
@@ -855,7 +876,9 @@ Mirroring ⑦'s pending-death window: a hero that crosses to ≤0 **mid-cascade*
 
 ### ⑨ Dequeue / Drive Loop
 
-The loop driver. **If the action queue is non-empty**, pull the next action and return to ① (continue draining the cascade through ①–⑥). **If the queue is empty**, first open any **pending batched post-reaction windows** (one per reactive card with accumulated matches — §4 PendingIntervention "Batching"); a response enqueues actions, so the queue may refill and drain again before this settle completes. With no windows left to open, run the settle stages ⑦ (death wave) then ⑧ (win check); the death wave may enqueue actions (deathrattles, reborns), so if the queue is non-empty again, resume draining — otherwise the cascade is fully settled and the engine awaits the next player action. (A player-submitted action is just the next thing dequeued, starting a fresh cascade.) **Ordering at the settle: batched windows → ⑦ death → ⑧ win** — so a post-reaction save resolves before the death/win it guards against.
+The loop driver. **If the action queue is non-empty**, pull the next action and return to ① (continue draining the cascade through ①–⑥, including ⑥′). **If the queue is empty**, run the settle stages ⑦ (death wave) then ⑧ (win check); the death wave may enqueue actions (deathrattles, reborns), so if the queue is non-empty again, resume draining — otherwise the cascade is fully settled and the engine awaits the next player action. (A player-submitted action is just the next thing dequeued, starting a fresh cascade.)
+
+Post-reaction windows are **not** opened here at the settle; they open **per action at ⑥′**, immediately after each triggering action. A save therefore resolves right after its cause — well before the eventual ⑦/⑧ — so it can lift a mortally-wounded minion back above 0 before any death wave collects it, without waiting for or racing against the full-cascade settle.
 
 ---
 
@@ -879,10 +902,16 @@ Each of these produces actions that go through the full pipeline.
 
 ---
 
+### Response resolution (both window kinds)
+
+Whenever a window's response is submitted, the response's effects **resolve to completion immediately** — the engine processes the response's enqueued actions (and any inline board/auto reactions they chain, FIFO) **fully, before returning to drain the pre-existing queue.** A declaration-hold then resumes its `heldAction` (re-validated, ②③); a post-reaction has nothing to resume.
+
+Immediate resolution is **load-bearing, not an optimization**: were the response merely FIFO-appended behind the rest of the cascade, an already-queued `PendingChoice` or declaration-hold could pre-settle deaths (⑦) and remove the very minion a save just targeted, before the heal lands. The **depth-1 cap** applies throughout — during a response no further *player* windows open (③′ and ⑥′ are suppressed) — but **board/auto triggers still fire inline**. The cap forbids only player windows, never reactions.
+
 ### PendingChoice Interruption
 
 When an effect issues `StartChoiceAction`:
-- **Pre-halt death rule (amendment B):** before halting, Death Resolution (⑦) runs to settle any pending deaths, so the player never chooses against a board where mortally-wounded minions still linger. (A choice is not keyed to the dying window, so there is no exception here — contrast `PendingIntervention` below.)
+- **Pre-halt death rule (amendment B) — type-A halts only:** before halting, Death Resolution (⑦) runs to settle any pending deaths, so the player never acts against a board where mortally-wounded minions still linger. This applies to **`PendingChoice` and declaration-hold interventions** alike — both are halts about a player's own *forward* action, where lingering pending-death minions are noise. It does **not** apply to post-reaction windows (⑥′), which are *about* the just-happened events and must keep their mortally-wounded subjects on board.
 - `GamePhase` → `PendingChoice`
 - Remaining effect actions (the continuation) are serialised into `PendingChoice.context`
 - Pipeline halts — no further actions are processed until the choice resolves
@@ -896,10 +925,17 @@ A single-response window, **opened by a live reactive trigger on a hand card** t
 - On **play**: the response card resolves first (full pipeline). It runs ordinary effects (summon, grant keyword, gain armor, …) and may `cancel` or `retarget` the held action. Then the held action **resumes, re-validated (②③)** against the post-response board: still legal → executes (④); now illegal (attacker dead/returned, target gone, forced to a Taunt) or `cancel`led → it **fizzles** — dropped, not executed (no `ActionRejection`; no client awaits it). It is **not** re-declared (③′ fires once — no redirect/secret loops).
 - On **skip / timeout**: the held action resumes and re-validates directly.
 
-**Post-reaction (post-phase — `heldAction` null).** A hand trigger that fires on a regular event (including the cadence-deferred `MinionMortallyWoundedEvent` / `HeroMortallyWoundedEvent`) does **not** halt per-event. Instead it **accumulates** into a per-card pending-response record `{ cardId, respondingPlayerId, matched: [...] }` — `matched` appending the event's subject each time the trigger fires during the cascade. **Windows open batched, at the settle** (see "Batching" below): the response resolves there, **before** ⑦/⑧, so a save (invert a mortally-wounded minion to `currentHealth > 0`, heal a hero above 0) lands before the death/win finalizes. On **skip / timeout** nothing happens and the settle proceeds. There is no held action to resume.
-- **Pre-halt death rule + R1 exception (amendment B):** before halting for a choice/intervention, Death Resolution (⑦) settles pending deaths so the responder never acts against a board where mortally-wounded minions still linger — **except** for a post-reaction save keyed to that very window (R1), where the mortally-wounded minion must remain on board for the response to act on; deaths are **not** pre-resolved, and the wave simply does not collect a minion the response lifted back above 0.
+**Post-reaction (post-phase — `heldAction` null).** A hand trigger that fires on a regular event (including the cadence-deferred `MinionMortallyWoundedEvent` / `HeroMortallyWoundedEvent`) does **not** halt per-event. The matching events produced by **one action** are batched, and a window opens at **⑥′** — immediately after that action's ⑤/⑥ (see "Batching"), *not* deferred to the full-cascade settle. Because ⑦ runs only at the eventual settle, the mortally-wounded subject is still on the board when the window opens, so a save (invert a mortally-wounded minion to `currentHealth > 0`, heal a hero above 0) lands before any death wave collects it. **Post-reaction windows never pre-settle deaths** — the subject must remain on board for the response to act on, and the wave simply does not collect a minion the response lifted back above 0. The response resolves immediately (see "Response resolution"); on **skip / timeout** nothing happens and the cascade resumes. There is no held action to resume.
 
-**Batching — one window per (reactive card, settle), with the matched set as the selector.** A single AoE produces many sub-events (one selector-carrying `DealDamageAction` → many `DamageTakenEvent`s, one per target), so a per-event post-reaction window would halt N times. It does not. Post-reaction matches **accumulate** through the cascade; when the queue drains, the engine opens **at most one** `PendingIntervention` window per pending reactive card, **before ⑦**. The window's candidate set is that card's `matched` list **∩ its declared `(selector, cardinality)` family** (the family's `All…/Alive…/Dead…` choice decides whether a mortally-wounded match is offered — inclusive for a "save" card). The player picks `cardinality` targets from that set, or skips; `SubmitInterventionAction` carries the choice and is validated by the ordinary §4 ③ membership check (`chosen ∈ matched`). Example: an AoE damaging **7** friendly minions while the responder holds a single-use "heal one minion +2 on `DamageTakenEvent`" card → **one** window offering all 7 (the dying ones included), pick one to heal/save. *(Declaration-hold windows do not need accumulate-at-settle: each declared action is one `ActionDeclaredEvent`. A "counter/redirect the spell" hooks the one `PlayCardAction`; a **pre-damage** card hooks the AoE's **single selector-carrying `DealDamageAction`** (§3 `ITargetSelector` auto-hit) — one window for the whole AoE either way, fired immediately rather than deferred to the settle.)* If multiple reactive cards are pending at the same settle, their windows open in a deterministic order (responder — current player first — then the card's hand order). Only **player-choice windows** batch this way; **auto reactions** (secrets, board triggers) still fire inline per-event in FIFO. A deterministic reaction with no decision (e.g. "heal *it* for 2", no target choice) therefore belongs in the **auto/secret flavour**, where it simply enqueues one heal per match and opens no window at all.
+**Batching — one window per (reactive card, action), with the matched set as the selector.** A single AoE produces many sub-events (one selector-carrying `DealDamageAction` → many `DamageTakenEvent`s, one per target), so a per-*event* window would halt N times. The batching unit is therefore **one action's events** — never one event, never the whole cascade: at ⑥′ the engine opens **at most one** window per reactive hand card whose trigger matched **that action**. The candidate set is the card's matched subjects from this action **∩ its declared `(selector, cardinality)` family** (the family's `All…/Alive…/Dead…` choice decides whether a mortally-wounded match is offered — inclusive for a "save" card). The player picks `cardinality` targets, or skips; `SubmitInterventionAction` carries the choice, validated by the ordinary §4 ③ membership check (`chosen ∈ matched`).
+
+- **AoE (one action) → one window.** An AoE damaging **7** friendly minions while the responder holds a single-use "heal one minion +2 on `DamageTakenEvent`" card → **one** window offering all 7 (the dying ones included), pick one to heal/save.
+- **Two separate damage instances (two actions) → two windows.** A card dealing 1 twice via two `DealDamageAction`s opens a window after each; a single-use reactive card may be spent on **either** — skip the first to hold for the second, or spend immediately. Skip leaves the card in hand with its trigger still registered. These are distinct instances, not the AoE case.
+- **Multiple reactive cards on one action** open in deterministic order: responder (current player first), then the card's hand order.
+
+Declaration-hold windows need no batching of this kind — each declared action is a single `ActionDeclaredEvent`, so a "counter/redirect the spell" card hooks the one `PlayCardAction`, and a **pre-damage** card hooks the AoE's **single selector-carrying `DealDamageAction`** (§3 `ITargetSelector` auto-hit) — one window for the whole AoE either way, fired at ③′ *before* the hits rather than at ⑥′ *after* them.
+
+Only **player-choice windows** open this way; **auto reactions** (secrets, board triggers) fire inline per-event in FIFO during ⑤ (and during a response — the depth-1 cap suppresses only player windows). A deterministic reaction with no decision (e.g. "heal *it* for 2", no target choice) belongs in the **auto/secret flavour**, enqueuing one effect per match and opening no window at all.
 
 ---
 
