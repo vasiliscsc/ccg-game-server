@@ -76,6 +76,19 @@ An online 1v1 collectible card game (Hearthstone-clone for initial scope). Featu
 
 ---
 
+### ⏹ SESSION STOP (2026-06-06, end of session 4)
+
+**State:** Session 4's spec work is **committed + pushed** — commit `566e17f` on `origin/main` (`git@github.com:vasiliscsc/ccg-game-server.git`): per-action intervention windows (new stage ⑥′), combat-as-two-actions (Option A), and the §1 data-model hygiene pass — all recorded in the three bullets directly above + the borrow-list note's "Comparison point D follow-up" entries. Spec re-grepped twice, internally consistent (no stale window/keyword/combat/`*Declared` language; the four `R1` spec refs are now self-contained). Borrow-list note also swept — clean as a historical log (every superseded claim has an adjacent supersede marker; we deliberately left the one dated `IKeyword.OnApplied` example in Item 3 as history). Implementation still NOT started.
+
+**⚠ Open thread flagged but NOT resolved this session — pick up here if continuing combat:** the **source-displaced re-validation rule**. We established that a card played at the defender's ⑥′ that *bounces/transforms the defender* should make the queued retaliation `DealDamageAction (attacker ← defender)` fizzle — but §4 ③ currently spells out fizzle-on-re-validation only for a dead/displaced **attacker** of an `AttackAction`, not for a `DealDamageAction` whose **source** has left the board. Need to pin: does a `DealDamageAction` re-validate its **source** at ③ on resume and fizzle if the source is gone/displaced? (Target-gone is already covered.) Natural next combat thread; tightens §4 ③ + the §3 interception close-out.
+
+**Resume options (user drives one at a time):**
+- **(a)** the source-displaced re-validation thread above;
+- **(b)** remaining Fireplace menu — **C Play-requirements** (fully open) or **D game-feel follow-ups** (Secret auto-flavor + secret-zone data model + one-per-name/max/own-turn; window **visibility**; **cost timing**; **marked-for-destruction** save scope; **R2** inversion stat-math). *Window timing is CLOSED.*
+- **(c)** the official pre-implementation task — **end-of-pass plan reconciliation** (canonical new-work list in the session-3 stop block below + the borrow-list note), then implementation at **Epic 01 / T1.1**.
+
+---
+
 ### ⏹ SESSION STOP (2026-06-05 ~01:50, end of session 3 — ran past midnight from 06-04)
 
 **State:** All 13 borrow-list items resolved; Fireplace points keyword-collapse + B (death cadence) + selector trichotomy + Fork-A + **D (unified reactive/interception, which subsumed point A)** + **D follow-up (intervention-window timing — per-action ⑥′, session 4, 2026-06-06)** all **applied to the spec**. Spec internally consistent (grep-verified — no stale window-opening/`*Declared`/cross-cascade-batching language). Implementation still NOT started.
