@@ -727,6 +727,27 @@ A free-form Q/A sweep for spec gaps, distinct from the 13-item borrow list and t
 - **Epic 16 (graveyard/fabrication):** lazy card fabrication at point of use; Phase-1 graveyard routing (3 branches incl. the asserting one); neutral-graveyard population tests; fabricate-on-draw/resurrect/recast tests.
 - **Lineage effects** now read `snapshot`/subtype identity, never a stored `originalCard`.
 
+### Hole #3 follow-on — summoning-sickness & Charge/Rush eligibility model (2026-06-08)
+
+**The gap (raised by the user's "does control reuse the summon pipeline?" question):** the spec stored a derived `MinionOnBoard.canAttack: bool` as the summon-sickness verdict, read at §4 ③. A single bool **can't encode Rush's restriction** (Rush = attack minions only on the entry turn; Charge = anything), so a Rush minion set `canAttack = true` could illegally go face. Same gap on summon and control. The user asked to *fully spec it*, not log it as a hole.
+
+**✅ DECISION (2026-06-08): replace the derived bool with a raw fact + a single *pulled*, target-aware eligibility check. APPLIED to spec §1/§3/§4.**
+
+- **First, the framing answer to "does control = summon?":** **No** — distinct handlers. Summon *creates* (fresh id, stats from definition, full health, registers triggers, fires Battlecry); control *moves an existing body* (preserves health/enchantments/`isInverted`/`isFrozen`/`bornNeutral`/`grantedKeywords`, **fires no Battlecry/`OnSummon`**, keeps its existing trigger subscriptions + `birthEpoch`). They share only a thin **board-entry routine** (insert at position, `attacksUsedThisTurn = 0`, mark `summoningSick`, aura recalc).
+- **The model:** `canAttack: bool` → **`summoningSick: bool`** (raw: entered a board this turn, not yet woken at a controller turn-start; set on entry by summon AND control; cleared by the turn-start sweep, step 6). Eligibility at §4 ③ **pulls** effective keywords for a sick minion — **Charge** → any target; **Rush** → minion-only (enemy or neutral, per-lane Taunt still applies), hero rejected `RushCannotTargetHero` (new code); **neither** → `AttackerCannotAttack`. Non-sick → any legal target.
+- **Why pulled, not stored:** it's the keyword-collapse philosophy (pull at the decision point). Aura-granted Charge/Rush works mid-turn and silenced haste is correctly lost, with **no recompute** — and the shared board-entry routine carries **zero** per-handler charge/rush logic (it only sets `summoningSick`). So 2.b stopped being a "rule duplicated across handlers" worry and became a single eligibility function.
+- **Neutrals** are never `summoningSick`; `CommandAttackAction` bypasses eligibility entirely (card-granted activation), and retaliation is ungated.
+
+**One sub-choice flagged:** the rush-hits-hero rejection is a new structured code `RushCannotTargetHero` (target-side, sibling of `MustTargetTaunt`) rather than overloading `AttackerCannotAttack` — chosen because codes are the test/localization contract (Item 7) and "Rush can't go face" is a distinct, assertable reason from "fully summoning sick."
+
+**Still open from this thread:** refinement **2.a** — soften the `TakeControlAction` trigger-handling wording from "re-register / list-move" to "re-bucket by owner (however the bus tracks ownership); no `OnSummon` re-run; `birthEpoch` preserved." Not yet applied.
+
+**Plan impact:**
+- **Epic 01 (data model):** `MinionOnBoard.canAttack` → `summoningSick` (semantics inverted: now the sickness fact, not the attack verdict); `ActionRejectionCode.RushCannotTargetHero`.
+- **Epic 04 (combat/validator):** §4 ③ eligibility is now the pulled Charge/Rush/hero check; tests — Charge hits face on entry turn, Rush hits a minion but is rejected on the hero (`RushCannotTargetHero`), vanilla minion can't attack on entry turn, aura-granted Charge enables attack mid-turn, silence removes haste, woken-next-turn attacks normally.
+- **Epic 0x (control) / summon:** both call the shared board-entry routine (sets `summoningSick`); control fires no Battlecry; eligibility is not recomputed at entry. Test: control a Charge minion → can attack immediately; control a vanilla minion → asleep this turn, wakes next turn.
+- **Turn lifecycle (step 6):** clears `summoningSick` (wake) + resets `attacksUsedThisTurn` for the new active player's minions.
+
 ---
 
 ## Topics deliberately omitted
