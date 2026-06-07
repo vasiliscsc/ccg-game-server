@@ -99,7 +99,27 @@ Open Q/A sweep for spec holes (distinct from the 13-item borrow list and the Fir
 
 **Still-open holes** (#1, #3+follow-on, #4 done): **#2** fatigue not in the data model (no counter on `PlayerState`, no action/event, yet `HeroMortallyWoundedEvent` lists `fatigue` as a cause). **Recorded deferrals:** temporary control; `!bornNeutral`-dies-in-neutral routing; hero freeze. Resume by picking #2, a deferral, or continuing the open Q/A.
 
-**State:** all session-5 work (Hole #3, summoning-sickness model, 2.a, attack-budget fix) committed + pushed to `origin/main` (commits `3adc01f`, `fefedb3`, `efd3ce0`, + the attack-budget commit). Spec re-grepped clean: no stale `canAttack` / `attacksAllowedThisTurn` / `originalCard` / "Taunt ignored" language (remaining mentions are deliberate supersede/rationale notes).
+### ⏹ SESSION STOP (2026-06-08, end of session 5)
+
+**State:** ALL session-5 work committed + pushed to `origin/main` — working tree clean, `main` in sync with remote (verified). Commit trail (chronological):
+- `3adc01f` — Hole #3 neutral zone (control/command + neutral graveyard + `GraveyardEntry` refactor)
+- `fefedb3` — summoning-sickness model (`canAttack`→`summoningSick`, pulled Charge/Rush eligibility)
+- `efd3ce0` — refinement 2.a (`TakeControlAction` trigger re-bucket wording)
+- `220b562` — attack-budget derived from keywords (dropped `attacksAllowedThisTurn`)
+- `6832645` — Hole #1 (`AttackResolvedEvent`→`AttackPerformedEvent` + `AttackAction` ④ handler + Stealth-break)
+- `f6e415b` — Hole #4 freeze half (`frozenOnTurn` + end-of-turn thaw + `MinionThawedEvent`)
+
+Spec (`specs/2026-05-26-game-mechanics.md`) re-grepped clean each round: no stale `canAttack` / `attacksAllowedThisTurn` / `originalCard` / `AttackResolvedEvent` / "Taunt ignored" / post-swap-unfreeze language (the few remaining mentions are deliberate supersede/rationale notes). Spec believed internally consistent.
+
+**What session 5 was:** an open Q/A "hole-hunting" pass (the user probes, I characterize + present trade-offs + recommend, then apply on their go-ahead). Full per-hole records + Plan-impact lists live in the borrow-list note's **"Hole-hunting pass"** section (`notes/2026-05-28-old-project-borrow-list.md`). Holes closed: **#3** (+ eligibility follow-on, 2.a, attack-budget), **#1**, **#4** (both halves).
+
+**▶ RESUME OPTIONS (user drives one):**
+- **(a)** Hole **#2 — fatigue**: not in the data model at all (no counter on `PlayerState`, no `FatigueDamage` action/event), yet `HeroMortallyWoundedEvent` already lists `fatigue` as a cause. The last open hole from the session-5 menu; clean standalone. *(Likely next.)*
+- **(b)** A **recorded deferral** — temporary/Shadow-Madness control; the `!bornNeutral`-dies-in-neutral graveyard branch; or **hero freeze** (needs `PlayerState.heroIsFrozen/heroFrozenOnTurn` + `HeroFrozenEvent`/`HeroThawedEvent` + ③ wiring — naturally bundled with a **hero-combat pass**, which is itself only lightly specced: hero attacking via weapon, `heroAttack`, durability).
+- **(c)** Keep **probing for new holes** (open Q/A) — or call the hole-hunting pass done.
+- **(d)** The official pre-implementation task — **end-of-pass plan reconciliation** (apply all `Plan impact:` lists to the epic/ticket files under `plans/2026-05-27-ccg-game-logic/`, create flagged new tickets/epics, update README). NOTE: the plan/README files still reference the OLD field names (`canAttack`, `attacksAllowedThisTurn`, `originalCard`) — reconciliation must sweep those too. Then implementation at **Epic 01 / T1.1**.
+
+**Methodology note for next session:** the user values coherence/correctness and HS-faithfulness; present trade-offs + recommend (don't just pick), give prior-art (Hearthstone/Fireplace) comparisons, reject fuzzy dispositions. Each applied decision → spec edit + borrow-list note record (with Plan impact) + session-state + memory, then commit+push (per-decision granularity, matches this repo's established workflow). Two of session 5's fixes corrected *my own* earlier hand-waves (the inverted freeze rule; the over-specified trigger list-move) — worth re-reading freshly rather than trusting prior prose.
 
 ---
 
