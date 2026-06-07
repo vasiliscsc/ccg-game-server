@@ -243,7 +243,7 @@ All actions carry a nullable `SourcePlayerId` (null = system-issued) and a `Requ
 | Action | Key fields |
 |---|---|
 | `PlayCardAction` | playerId, cardId, targetId? |
-| `AttackAction` | attackerId, targetId |
+| `AttackAction` | attackerId, targetId. **Handler (④), after ③ re-validation:** (1) snapshot the attacker's effective **base attack** (HS-style attack-lock; damage *modifiers* are pulled later, per `DealDamageAction` ④); (2) **consume the activation** — `attacksUsedThisTurn++`; (3) **break Stealth** if the attacker has it — an own-moment of *attacking*: clear the Stealth keyword and emit `StealthBrokenEvent` (attacking is what drops Stealth; merely being targeted/dealing non-attack damage does not — closes the Stealth half of hole #4); (4) emit `AttackPerformedEvent { attackerId, targetId }` (the post-interception **actual** target); (5) **enqueue two independent `DealDamageAction`s** — the strike (attacker → target, amount = the snapshotted attack) and, iff the defender's attack > 0, the retaliation (defender → attacker) — processed **sequentially, not atomically** (§3). **Freeze interaction:** a frozen attacker never reaches ④ (rejected at §4 ③ `AttackerFrozen`); the `attacksUsedThisTurn` consumed in step 2 is also the input the end-of-turn **unfreeze** sweep reads — a character frozen *after* it has used its attack(s) thaws at end of turn, one frozen *while still able to attack* stays frozen (the precise `frozenOnTurn`-style thaw tracking is the remaining half of hole #4). |
 | `UseHeroPowerAction` | playerId, targetId? |
 | `EndTurnAction` | playerId |
 | `SubmitMulliganAction` | playerId, cardIdsToKeep[] |
@@ -327,8 +327,8 @@ All events carry an `OccurredAt` timestamp and an `originEpoch: int` (the `curre
 
 | Event | Key fields |
 |---|---|
-| `AttackDeclaredEvent` | attackerId, targetId |
-| `AttackResolvedEvent` | attackerId, targetId, damageToTarget, damageToAttacker |
+| `AttackDeclaredEvent` | attackerId, targetId — the combat-specific **declaration**, published at `AttackAction` **③′** (the *intended*, pre-interception target): renderer telegraph + the typed hook for "when this attacks" interception (e.g. a redirect). May still fizzle/retarget before ④. |
+| `AttackPerformedEvent` | attackerId, targetId — the **committed** swing, emitted at `AttackAction` **④** (the post-interception *actual* target). Announces the activation-consumed delta (`attacksUsedThisTurn++`) and is the natural anchor for a future "after this attacks" trigger. The swing's **damage is not here** — it lands via the two enqueued `DealDamageAction`s' own `DamageTakenEvent`s. **Replaces the removed `AttackResolvedEvent`**, which bundled both hit amounts into a single delta — impossible under two-action combat, where neither hit has landed at ④ and a card may interleave between them. |
 | `DamageTakenEvent` | targetId, amount, overkill, sourceId |
 | `HealedEvent` | targetId, amount, sourceId |
 
@@ -341,6 +341,7 @@ All events carry an `OccurredAt` timestamp and an `originEpoch: int` (the `curre
 | `MinionInvertedEvent` | minionId, isInverted |
 | `CardInvertedEvent` | cardId, playerId, isInverted |
 | `DivineShieldBrokenEvent` | minionId |
+| `StealthBrokenEvent` | minionId — Stealth keyword cleared because the minion attacked (`AttackAction` ④). Parallels `DivineShieldBrokenEvent` (a one-time keyword consumption). |
 | `EnrageStateChangedEvent` | minionId, isEnraged |
 | `MinionStatsChangedEvent` | minionId (signals aura recalc needed) |
 
@@ -468,7 +469,7 @@ Behaviour attaches two ways.
 | Keyword | Read at |
 |---|---|
 | Taunt | attack validation (§4 ③ — opponent must attack a Taunt minion) |
-| Stealth | targeting validation (cannot be targeted by the opponent) |
+| Stealth | two reads: (1) targeting validation — cannot be targeted by the opponent (`TargetStealthed`); (2) **broken when the minion attacks** — an own-moment cleared at `AttackAction` ④ (`StealthBrokenEvent`), like Divine Shield's one-time consumption. Being targeted or dealing non-attack damage does not break it. |
 | Charge / Rush | pulled at attack eligibility (§4 ③) for a `summoningSick` minion: **Charge** → may attack any target (minion or hero); **Rush** → may attack a **minion only** (enemy or neutral) on the entry turn, never a hero. Not baked into a stored bool — pulling at the moment makes aura-granted or silenced haste correct with no recompute. |
 | Windfury | pulled at attack eligibility (§4 ③): the per-turn attack **budget** = `effectiveKeywords has windfury ? 2 : 1` (extensible — e.g. a future Mega-Windfury → 4). Never stored on the minion, so it can't drift from the keyword; the eligibility check is `attacksUsedThisTurn < budget`. |
 | Divine Shield | consumed inside `DealDamageAction`: if target has it → remove it, publish `DivineShieldBrokenEvent`, apply no damage |

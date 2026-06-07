@@ -750,6 +750,21 @@ A free-form Q/A sweep for spec gaps, distinct from the 13-item borrow list and t
 - **Epic 0x (control) / summon:** both call the shared board-entry routine (sets `summoningSick`); control fires no Battlecry; eligibility is not recomputed at entry. Test: control a Charge minion → can attack immediately; control a vanilla minion → asleep this turn, wakes next turn.
 - **Turn lifecycle (step 6):** clears `summoningSick` (wake) + resets `attacksUsedThisTurn` for the new active player's minions.
 
+### Hole #1 — `AttackResolvedEvent` vs. two-action combat (2026-06-08)
+
+**The gap:** `AttackResolvedEvent { attackerId, targetId, damageToTarget, damageToAttacker }` bundled *both* combat hit amounts into one event — only producible by atomic apply-both-then-announce combat, which the two-action model replaced. Under two-action combat `AttackAction` ④ enqueues two independent `DealDamageAction`s and finishes; neither hit has landed at ④, each can be modified/intercepted/interleaved, so the two totals are never jointly known as one delta. The event was referenced **nowhere** (purely vestigial) and isn't even a delta (the real deltas are the two `DamageTakenEvent`s).
+
+**✅ DECISION (2026-06-08): Option (b) — remove `AttackResolvedEvent`, add `AttackPerformedEvent`, and write the `AttackAction` handler. APPLIED to spec §2A/§2B/§3.**
+
+- **`AttackDeclaredEvent`** (③′) = the *intended*/pre-interception declaration (renderer telegraph + redirect hook; may fizzle).
+- **`AttackPerformedEvent { attackerId, targetId }`** (④) = the *committed*/post-interception swing — chosen over bare removal because `AttackAction` ④ **does** mutate state (consumes the activation, breaks Stealth) and §2's invariant says every state change is announced; right now ④ had no event. Carries **no damage numbers** (those are the two `DamageTakenEvent`s). Also the correctly-shaped anchor for a future "after this attacks" trigger (not in v1's catalog).
+- **`AttackAction` ④ handler now specified** (it previously lived only as §3 prose, which is *why* the event got stranded): snapshot base attack → `attacksUsedThisTurn++` → break Stealth (`StealthBrokenEvent`) → emit `AttackPerformedEvent` → enqueue strike + (conditional) retaliation `DealDamageAction`s.
+- **Folded in (user request): Stealth + unfreeze.** Stealth now **breaks on attack** at ④ (`StealthBrokenEvent`, new — parallels `DivineShieldBrokenEvent`; §3 `IKeyword` Stealth row updated) — this **closes the Stealth half of hole #4**. Freeze: a frozen attacker is rejected at ③ (`AttackerFrozen`); the `attacksUsedThisTurn` consumed at ④ is the input the end-of-turn unfreeze sweep reads — **the precise `frozenOnTurn` thaw rule is the remaining half of hole #4** (still open).
+
+**Plan impact:**
+- **Epic 02/04 (events + combat):** drop `AttackResolvedEvent`; add `AttackPerformedEvent` (④) + `StealthBrokenEvent`; `AttackAction` handler emits them and enqueues the two `DealDamageAction`s. Tests: attack emits Declared(③′)→Performed(④)→two DamageTaken; redirect → Declared(intended) but Performed/DamageTaken(actual); stealthed attacker → `StealthBrokenEvent` on its first swing; renderer reconstructs combat with no AttackResolved.
+- **Hole #4 now half-closed:** Stealth-on-attack done; only Freeze `frozenOnTurn` thaw tracking remains.
+
 ---
 
 ## Topics deliberately omitted
