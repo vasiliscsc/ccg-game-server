@@ -701,6 +701,34 @@ The model, in four locked pieces:
 
 ---
 
+## Hole-hunting pass (post-Fireplace, 2026-06-07+)
+
+A free-form Q/A sweep for spec gaps, distinct from the 13-item borrow list and the Fireplace points. The user probes; each confirmed gap is closed with a recorded decision + Plan impact.
+
+### Hole #3 — Neutral zone: control / command / graveyard (2026-06-07)
+
+**The gap:** the locked feature scope said players can attack, *command*, and *mind-control* neutral minions, but (a) the §4 ③ validator had no attacker-ownership check at all (a player could swing with an opponent-owned minion — latent bug), (b) no control-change action existed (so even plain Hearthstone enemy mind-control was unmodeled), (c) neutral deaths had no graveyard home, and (d) turn-reset machinery is owner-scoped so a commanded neutral could never reset its attack state. Surfaced as one contradiction, unravelled into a cluster.
+
+**✅ DECISION (2026-06-07): APPLIED to spec §1/§2/§3/§4.** Vocabulary locked: **control** = permanently move a minion into the controller's zone (asleep first turn unless rush/charge), no longer neutral, dies to that player's graveyard; **command** = a one-shot card-granted single attack *this turn*, no zone change, stays neutral. Requirements from the user:
+
+- **Neutrals are inert by default** (Req 2): not commandable/controllable without a card. So the default `AttackAction` legality is simply `attacker.ownerId == submitter` (own minions only) + new code `AttackerNotControlled` — which *also* closes the latent "swing with the opponent's minion" bug. Neutrals are attackable targets, never default attackers.
+- **Per-lane Taunt (Req 1 — REVERSES the old "Taunt ignored for neutrals" scope):** the Taunt constraint is scoped to the *target's lane*; a neutral Taunt forces attacks into the neutral lane only, an opponent Taunt the opponent lane only; cross-lane never applies. Shared by `AttackAction` + `CommandAttackAction`.
+- **Two actions, not three cards' worth:** `TakeControlAction { minionId, newOwnerId, boardPosition?, sourceId? }` (BoardFull-reject → re-home → asleep-unless-rush/charge → re-register triggers to new owner's bus list, `birthEpoch` unchanged → aura recalc → `MinionControlChangedEvent`); `CommandAttackAction { attackerId(neutral), targetId, sourceId }` (relaxed attacker rule; full activation honoring Windfury = 2 strikes at the one target, **each re-validated** so a first-retaliation mortal wound fizzles the second; ignores `attacksUsedThisTurn`; `canAttack` pinned true for neutrals; desugars to the combat `DealDamageAction` pair(s)). The neutral-only/enemy-only/either distinction is **selectors on the cards**, not new actions or new selectors (`Union(AllNeutralMinions, AllEnemyMinions)` etc.).
+- **Command reaches anything a controlled minion can** (opponent characters incl. hero, or another neutral), under per-lane Taunt; **commanded minions still take retaliation**, and the **fizzle is the attacker's concern only — a mortally-wounded *defender* still retaliates** (its retaliation is a separate `DealDamageAction` with the defender as source, not gated by ③ attack-eligibility; consistent with the dying-swing payoff of the combat-atomicity decision).
+- **Neutral graveyard (Req 1):** new shared `GameState.neutralGraveyard` (not per-player). New immutable **origin** flag `MinionOnBoard.bornNeutral` (set *only* by `SpawnNeutralMinionAction`; survives control). §4 ⑦ Phase-1 routing reads two inputs: `ownerId != null` → that player's graveyard; `bornNeutral && ownerId == null` → neutral graveyard; `!bornNeutral && ownerId == null` → **undefined/asserts** (deferred, recorded in Unaddressed Features — reachable only by a future "release to neutral" / "summon into neutral" path, which would need an owner-of-record field not added now).
+- **`GraveyardEntry` refactor (the user's challenge):** since the card form is fabricated at death anyway *and* `MinionOnBoard` never retains its originating Card, a stored `originalCard` is derived data that can only drift (and eager-minting burns a `Card.id` per corpse). **Removed `originalCard` from the base**; each subtype keeps its entity snapshot (`snapshot`/`weaponState`; `GraveyardSpell` gains `definitionKey`+`isInverted`), and the card form is **fabricated lazily at point of use** (draw-from-graveyard/resurrect/recast/re-equip), minting the `Card.id` then as a stage-④ action. Net *less* spec; bouncing a controlled token already worked via the existing Fabrication rule.
+
+**Deferred (recorded):** temporary/Shadow-Madness control (permanent only this pass); the `!bornNeutral`-dies-in-neutral routing branch.
+
+**Plan impact:**
+- **Epic 01 (data model):** `GameState.neutralGraveyard`; `MinionOnBoard.bornNeutral` + neutral `canAttack`-pinned-true semantics; `GraveyardEntry` hierarchy refactor (drop base `originalCard`, `GraveyardSpell.definitionKey/isInverted`); `ActionRejectionCode.AttackerNotControlled`.
+- **Epic 04 (combat/validator):** per-lane Taunt; explicit attacker-control check; `CommandAttackAction` handler (Windfury-aware activation, independent re-validation, desugar to damage pair); defender-retaliation-not-fizzled tests.
+- **Epic 0x (control):** `TakeControlAction` handler (BoardFull reject, re-home, asleep-unless-rush/charge, trigger re-registration to new owner list, aura recalc) + `MinionControlChangedEvent`. Tests: control a neutral / control an enemy / board-full reject / asleep-unless-charge / dies-to-controller-graveyard / trigger fires for new owner.
+- **Epic 16 (graveyard/fabrication):** lazy card fabrication at point of use; Phase-1 graveyard routing (3 branches incl. the asserting one); neutral-graveyard population tests; fabricate-on-draw/resurrect/recast tests.
+- **Lineage effects** now read `snapshot`/subtype identity, never a stored `originalCard`.
+
+---
+
 ## Topics deliberately omitted
 
 These came up in the investigation but don't merit changes:

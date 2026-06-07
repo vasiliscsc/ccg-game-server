@@ -76,6 +76,25 @@ An online 1v1 collectible card game (Hearthstone-clone for initial scope). Featu
 
 ---
 
+### Session 5 (2026-06-07): hole-hunting pass — neutral zone control/command/graveyard (DECIDED + APPLIED)
+
+Open Q/A sweep for spec holes (distinct from the 13-item borrow list and the Fireplace points). First hole closed: **#3 — neutral zone**. Full record + Plan impact in the borrow-list note's new **"Hole-hunting pass"** section. Summary of what landed in the spec (§1/§2/§3/§4):
+
+- **Vocabulary:** **control** = permanent move to controller's board (asleep first turn unless rush/charge), no longer neutral, dies to controller's graveyard; **command** = card-granted one-shot single attack this turn, no zone change, stays neutral.
+- **Default attack legality fixed:** `attacker.ownerId == submitter` (own minions only) + new `AttackerNotControlled` — closes a latent bug (old validator let you swing with an opponent-owned minion) and keeps neutrals non-commandable by default (Req 2).
+- **Per-lane Taunt** (REVERSES the old "Taunt ignored for neutrals"): constraint scoped to the target's lane; cross-lane never applies. Shared by `AttackAction`/`CommandAttackAction`.
+- **Two new actions:** `TakeControlAction` (re-home, asleep-unless-rush/charge, trigger re-registration to new owner's bus list with `birthEpoch` unchanged, aura recalc, `MinionControlChangedEvent`, BoardFull-reject); `CommandAttackAction` (relaxed attacker rule, Windfury=2 strikes each re-validated so first-retaliation-kill fizzles the second, ignores `attacksUsedThisTurn`, desugars to combat `DealDamageAction` pair). Neutral/enemy/either target distinction = **selectors on cards**, no new actions/selectors.
+- **Fizzle is the attacker's concern only** — a mortally-wounded *defender* still retaliates (separate `DealDamageAction`, defender as source, not gated by ③). Made explicit in §4 ③.
+- **Neutral graveyard:** shared `GameState.neutralGraveyard`; immutable origin flag `MinionOnBoard.bornNeutral` (set only by `SpawnNeutralMinionAction`). §4 ⑦ Phase-1 routing: `ownerId!=null`→player graveyard; `bornNeutral && ownerId==null`→neutral graveyard; `!bornNeutral && ownerId==null`→**undefined/asserts** (deferred → Unaddressed Features; reachable only by a future release-to-neutral / summon-into-neutral path needing an owner-of-record).
+- **`GraveyardEntry` refactor** (user's challenge): removed base `originalCard` (derived data that can only drift; `MinionOnBoard` never retains its source Card anyway) → each subtype keeps its snapshot (`GraveyardSpell` gains `definitionKey`+`isInverted`); **card form fabricated lazily at point of use**. Net less spec.
+- **Deferred:** temporary/Shadow-Madness control (permanent only); the `!bornNeutral`-dies-in-neutral branch.
+
+**Still-open holes from the session-5 menu** (I flagged five soft spots; #3 done): **#1** `AttackResolvedEvent` vs. the two-action combat model (looks vestigial/contradictory); **#2** fatigue not in the data model (no counter on `PlayerState`, no action/event, yet `HeroMortallyWoundedEvent` lists `fatigue` as a cause); **#4** Stealth-drops-on-attack + Freeze unfreeze-tracking (own-moment keyword behaviours with no home — no `frozenOnTurn`). Resume by picking one, or continue the open Q/A.
+
+**State:** session-5 Hole #3 spec edits + bookkeeping committed + pushed (`origin/main`). Spec re-grepped: no stale `originalCard`/"Taunt ignored" language (the two remaining mentions are deliberate supersede/rationale notes).
+
+---
+
 ### ⏹ SESSION STOP (2026-06-06, end of session 4)
 
 **State:** Session 4's spec work is **committed + pushed** — commit `566e17f` on `origin/main` (`git@github.com:vasiliscsc/ccg-game-server.git`): per-action intervention windows (new stage ⑥′), combat-as-two-actions (Option A), and the §1 data-model hygiene pass — all recorded in the three bullets directly above + the borrow-list note's "Comparison point D follow-up" entries. Spec re-grepped twice, internally consistent (no stale window/keyword/combat/`*Declared` language; the four `R1` spec refs are now self-contained). Borrow-list note also swept — clean as a historical log (every superseded claim has an adjacent supersede marker; we deliberately left the one dated `IKeyword.OnApplied` example in Item 3 as history). Implementation still NOT started.
@@ -180,9 +199,9 @@ When an opponent declares an action, the other player gets a **single-response w
 ### Neutral zone
 - Third board zone between the two player boards — neither player owns it
 - Neutral minions have no turn of their own
-- Players can: attack neutral minions, command them to attack, mind control them
-- Taunt keyword is **ignored** for neutral minions
-- Player auras do **not** affect neutral minions
+- Players can: attack neutral minions, **command** them to attack (card-granted one-shot, no zone change), **control** them (card-granted permanent move to own board) — see session-5 (2026-06-07) for the full control/command model
+- Taunt keyword is **per-lane** (amended 2026-06-07; was "ignored for neutral minions"): a neutral Taunt forces attacks aimed into the neutral lane, but not into the opponent lane, and vice versa
+- Player auras do **not** affect neutral minions (while they are neutral; a controlled minion is owned and gets its controller's auras)
 - Neutral minions enter via: card effect, pre-populated at game start, event trigger
 - Zone has a **max capacity** and may **repopulate on turn start** (configured per game mode)
 

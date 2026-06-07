@@ -14,8 +14,9 @@
 sessionId: string
 player1: PlayerState
 player2: PlayerState
-neutralZone: MinionOnBoard[]          // ownerId = null; Taunt ignored; player auras do not apply
+neutralZone: MinionOnBoard[]          // ownerId = null; Taunt is per-LANE (a neutral Taunt forces attacks aimed INTO the neutral lane, but not attacks into the opponent lane — and vice versa; §4 ③); player auras do not apply
 neutralZoneConfig: NeutralZoneConfig? // null = no neutral zone in this game mode
+neutralGraveyard: GraveyardEntry[]    // single shared graveyard, owned by GameState (NOT per-player). A dead minion lands here iff bornNeutral && ownerId == null at death (system-spawned neutral that died in the neutral lane); see §4 ⑦ Phase 1 routing
 turn: TurnState
 timer: TimerState
 phase: GamePhase                      // Mulligan | WaitingForPlayers | InProgress | PendingChoice | PendingIntervention | Ended
@@ -55,7 +56,8 @@ cardsPlayedThisTurn: int      // Combo tracking
 ```
 minionId: string
 definitionKey: string         // the SOLE link into the card-definition library — and to the ICardHandler that registers this minion's triggers/deathrattle/keyword-hooks (see note at end of block). NOT a Card.id: playing a card never transfers its id; tokens have a definitionKey but no Card.id (Identity section).
-ownerId: string?              // null = neutral zone
+ownerId: string?              // null = neutral zone. A control effect (TakeControlAction) sets this to a player, moving the minion out of the neutral lane onto that player's board; it then dies to that player's graveyard.
+bornNeutral: bool             // ORIGIN flag, NOT a zone read: true iff this minion was spawned-neutral by the system (SpawnNeutralMinionAction). Immutable; survives a control change. With ownerId, the SOLE input to the §4 ⑦ graveyard-routing rule. A player-card minion summoned INTO the neutral lane is NOT bornNeutral (deferred — see Unaddressed Features).
 baseAttack, baseHealth: int   // immutable, from card definition
 enchantments: StatModifier[]  // permanent buffs; Silence clears all
 auraAttackBonus, auraHealthBonus: int  // recalculated each aura pass; never stored in enchantments
@@ -71,8 +73,8 @@ grantedTribes: Tribe          // permanent tribe grants ("becomes a Beast"); Sil
 auraTribes: Tribe             // recomputed each aura pass; never persisted (parallels auraAttackBonus); drops when the aura leaves
 effectiveTribes: Tribe        // computed = intrinsicTribes | grantedTribes | auraTribes; all engine tribe checks use this
 isInverted: bool
-canAttack: bool
-attacksUsedThisTurn: int      // incremented on each attack
+canAttack: bool               // for a NEUTRAL minion this is pinned true at all times (neutrals have no turn of their own and never participate in turn-start resets); it gates only command/retaliation eligibility, never blocking them
+attacksUsedThisTurn: int      // incremented on each attack. NOT consulted for a neutral commanded via CommandAttackAction — command is a card-granted activation, not the minion's own budget (§2A / §4 ③)
 attacksAllowedThisTurn: int   // default 1; Windfury sets to 2 on summon
 summonOrder: int              // monotonically increasing per session; used for trigger fire ordering
 isFrozen, isDamaged: bool
@@ -112,18 +114,24 @@ healthDelta: int
 
 ```
 GraveyardEntry (abstract)
-  originalCard: Card
   turnPlayed: int
+  // NO stored Card. The card form is FABRICATED on demand (the §1 Fabrication rule) at the
+  // point of use — draw-from-graveyard, resurrect-as-card, re-equip, recast — minting a fresh
+  // Card.id then, as a stage-④ action. (A pre-stored "originalCard" would be a pure function of
+  // the subtype snapshot below — derived data that can only drift; eager minting would also burn
+  // a Card.id per corpse that is never pulled.) Each subtype keeps its own ENTITY snapshot, the
+  // single source of truth the fabrication reads.
 
 GraveyardMinion : GraveyardEntry
-  snapshot: MinionOnBoard   // full state at death
+  snapshot: MinionOnBoard   // full state at death; carries definitionKey + isInverted → card fully derivable
   diedOnTurn: int
 
 GraveyardSpell : GraveyardEntry
-  // base fields sufficient
+  definitionKey: string     // a spell has no board snapshot, so it stores its own identity here
+  isInverted: bool          // (its analogue of snapshot/weaponState) → card fabricated from these on recast
 
 GraveyardWeapon : GraveyardEntry
-  weaponState: WeaponOnHero
+  weaponState: WeaponOnHero // carries definitionKey → card derivable
   destroyedOnTurn: int
 ```
 
@@ -182,7 +190,7 @@ Cards and minions are independent entities with independent ID allocators. They 
 - The `definitionKey` field on `Card` and on `MinionOnBoard` points into the static card-definition library. It is the only cross-entity link.
 - Playing a Card to summon a Minion does **not** transfer the Card's `id` to the minion. The Card leaves play (to graveyard or fabricated-elsewhere); the Minion is a new entity with a fresh `minionId`.
 - Tokens (minions summoned by effects with no originating card) have a `minionId` and a `definitionKey`. There is no `Card.id` associated with them while on the board.
-- `GraveyardMinion.originalCard` carries the originating Card snapshot for lineage-aware effects ("resummon the last minion that died"). The resummon uses only the snapshot's `definitionKey` — a *new* `minionId` is allocated.
+- A `GraveyardMinion` stores **no card** — only its `snapshot` (full death state, including `definitionKey` + `isInverted`). Lineage-aware effects derive everything from it: "resummon the last minion that died" uses `snapshot.definitionKey` (a *new* `minionId` is allocated); "add the dead minion's *card* to hand" / resurrect-as-card **fabricates** a Card on demand from `snapshot` via the Fabrication rule above (minting a fresh `Card.id` at that moment). This holds uniformly for tokens and played-from-hand minions alike — `MinionOnBoard` never retains its originating Card, so the card form is always a fabrication, never a stored reference.
 
 ### Minion → Card Transitions (Bounce / Shuffle-In)
 
@@ -258,6 +266,8 @@ All actions carry a nullable `SourcePlayerId` (null = system-issued) and a `Requ
 | `GiveCardAction` | playerId, definitionKey, sourceId? |
 | `ReturnToHandAction` | minionId, policy: MinionToCardPolicy, sourceId? |
 | `TransformMinionAction` | minionId, newDefinitionKey, sourceId? |
+| `TakeControlAction` | minionId, newOwnerId, boardPosition?, sourceId? — **CONTROL** (permanent): re-homes the minion onto `newOwnerId`'s board and sets `ownerId`. The card's `ITargetSelector` defines legal `minionId` (neutral-only = `AllNeutralMinions`, enemy-only = `AllEnemyMinions`, either = `Union(...)`; no new selectors). Handler: reject `BoardFull` if the destination is full; else set `ownerId`, move zones, set the minion **asleep** (`canAttack = false`) unless its effective keywords include rush/charge, re-register its triggers from the old owner's bus list to the new (same `listenerId`, `birthEpoch` unchanged — not a new entity), aura-recalc, emit `MinionControlChangedEvent`. The minion is now non-neutral and dies to `newOwnerId`'s graveyard. |
+| `CommandAttackAction` | attackerId (a neutral), targetId, sourceId — **COMMAND** (one-shot, no zone change): a card-granted single attack *activation* by a neutral minion. Effect-issued. Re-validates at §4 ③ with the **relaxed attacker rule** (a neutral may attack only via this action; never via player `AttackAction`); legal `targetId` = anything a controlled minion could attack (opponent characters incl. hero, or another neutral) under the same **per-lane Taunt** rule. Honors the attacker's keywords: a **Windfury** neutral makes **two** strikes at the one target, **sequenced independently** — the second re-validates, so a mortal wound from the first retaliation fizzles it (§4 ③ aliveness). Ignores `attacksUsedThisTurn` (`canAttack` is pinned true for neutrals). Desugars into the same combat `DealDamageAction` pair(s) as `AttackAction`, so retaliation lands normally. |
 | `InvertTargetAction` | targetId, sourceId? |
 | `UnInvertTargetAction` | targetId, sourceId? |
 | `BuffMinionAction` | minionId, attackDelta, healthDelta, sourceId |
@@ -307,6 +317,7 @@ All events carry an `OccurredAt` timestamp and an `originEpoch: int` (the `curre
 | `MinionMortallyWoundedEvent` | minionId, sourceId, cause — fires the instant a minion enters pending-death (currentHealth ≤0 from damage, maxHealth ≤0 from aura loss, or a destroy-mark), **before** the death-wave settle removes it; distinct from `MinionDiedEvent` (Phase-1 removal). The hook for dying-window reactions — e.g. a **save-from-lethal** intervention, where a player responds to lethal damage to rescue the minion before the settle removes it (the "R1" design avenue in the borrow-list note's amendment B). |
 | `MinionDiedEvent` | minionId, snapshot, sourceId, diedOnTurn |
 | `MinionTransformedEvent` | minionId, newCard |
+| `MinionControlChangedEvent` | minionId, fromOwnerId? (null = was neutral), toOwnerId — emitted by `TakeControlAction` after the minion is re-homed onto its new owner's board (asleep unless rush/charge). A commanded attack (`CommandAttackAction`) does **not** emit this — it changes no owner — it rides the ordinary combat events. |
 | `NeutralMinionSpawnedEvent` | minion |
 | `NeutralZoneRepopulatedEvent` | spawnedMinions[] |
 | `DeathWaveStartedEvent` | waveIndex |
@@ -374,7 +385,7 @@ When validation (§4 ②③) fails, the action is rejected with a **structured c
 enum ActionRejectionCode {
     WrongPhase, NotActivePlayer, CardNotInHand, NotEnoughMana,
     InvalidTarget, TargetStealthed, MustTargetTaunt,
-    AttackerNotAlive, AttackerCannotAttack, AttackerFrozen, AttackerExhausted, BoardFull,
+    AttackerNotAlive, AttackerNotControlled, AttackerCannotAttack, AttackerFrozen, AttackerExhausted, BoardFull,
     // … closed set; grows in lockstep with the §4 ②③ validation rules
 }
 
@@ -615,6 +626,8 @@ interface ITargetSelector {
 
 **Factories — parameterized:** `AdjacentTo(id)`, `MinionsWithTribe(Tribe)`, `MinionsWithKeyword(string)`, `OtherThan(selector, id)`, `Union(s1, s2, …)`, `Filter(selector, ITriggerCondition)` (reuse the condition library as the entity predicate — e.g. *"all damaged friendly minions"* = `Filter(AllFriendlyMinions, IsDamaged)`).
 
+**Control / command targeting needs no new selectors.** A "take control of any neutral or enemy minion" card declares `Union(AllNeutralMinions, AllEnemyMinions)`; a neutral-only or enemy-only variant uses the corresponding singleton; "command a neutral to attack another neutral" uses `OtherThan(AllNeutralMinions, attackerId)`, and "command into the opponent lane" uses `Union(AllEnemyMinions, EnemyHero)`. Per-lane Taunt is **not** encoded in these selectors — it is enforced uniformly by the §4 ③ validator on top of the card's declared set, exactly as for a normal `AttackAction`.
+
 **`All…` / `Alive…` / `Dead…` (mortally-wounded inclusion).** A minion at `currentHealth ≤ 0` that is **still on the board** — not yet removed by death resolution — is **"mortally wounded"** (a.k.a. pending death). (This window is transient under any model but becomes a designer-meaningful state under the cascade-settle death model — Fireplace amendment B, §4 ⑦ — where such a minion can persist across same-cascade reactions.) The three on-board minion families partition exactly on this distinction — **`All… = Alive… ∪ Dead…`**, disjoint:
 
 | Family | Returns | Use when |
@@ -794,8 +807,9 @@ Precondition checks. Returns `Rejected(ActionRejection)` with the matching code 
 - Turn ownership: is this the active player? → `NotActivePlayer`
 - Mana affordability: `effectiveCost ≤ player.mana` → `NotEnoughMana`
 - Target validity: target is alive, is not stealthed (for opponent spells/attacks), and is a **member of the card/effect's declared target selector's output** (`chosen ∈ selector.Select(context)`, plus the cardinality/optionality rule — see §3 `ITargetSelector`) → `InvalidTarget` / `TargetStealthed`. The same selector defines the client's legal-target highlighting, so preview and validation cannot drift.
-- Taunt enforcement: if opponent has Taunt minions on board, attacks must target one of them → `MustTargetTaunt`
-- Attack eligibility: attacker is **alive** — `currentHealth > 0` and not destroy-marked (else `AttackerNotAlive`), `canAttack = true` (else `AttackerCannotAttack`), `isFrozen = false` (else `AttackerFrozen`), `attacksUsedThisTurn < attacksAllowedThisTurn` (else `AttackerExhausted`). The aliveness check is what makes a **mortally-wounded attacker fizzle on re-validation**: a "destroy / return the attacker" interception (§3) leaves the attacker ≤0 / destroy-marked but on board (death is deferred to ⑦), and the held attack, re-entering ③ on resume, is rejected here before it can swing.
+- Attacker control: the submitter may attack only with a minion **it controls** — `attacker.ownerId == submitter` → else `AttackerNotControlled`. This is an explicit check (it closes the gap where the old "is this the active player?" line let a player swing with an opponent-owned minion), and it means **neutrals are never default attackers** (`ownerId == null` controls for no one). The **sole exception** is `CommandAttackAction`, a card-granted effect whose validation permits a *neutral* `attackerId` (the relaxed attacker rule); it still runs every other check below.
+- Taunt enforcement — **per lane** (amended 2026-06-07): the constraint is scoped to the **target's lane**. Attacking into the **opponent lane** → if that opponent has Taunt minions *on their own board*, the attack must target one (else `MustTargetTaunt`); face is legal when none. Attacking into the **neutral lane** → if a neutral Taunt is present, the attack must target it. **Cross-lane Taunt never applies** — a neutral Taunt does not lock you out of the opponent's hero, nor an opponent Taunt out of a neutral. (Supersedes the earlier "Taunt is ignored for neutral minions" scope; neutral Taunt is now honored, but only within the neutral lane.) The same rule governs `CommandAttackAction`.
+- Attack eligibility: attacker is **alive** — `currentHealth > 0` and not destroy-marked (else `AttackerNotAlive`), `canAttack = true` (else `AttackerCannotAttack`), `isFrozen = false` (else `AttackerFrozen`), `attacksUsedThisTurn < attacksAllowedThisTurn` (else `AttackerExhausted`). The aliveness check is what makes a **mortally-wounded attacker fizzle on re-validation**: a "destroy / return the attacker" interception (§3) leaves the attacker ≤0 / destroy-marked but on board (death is deferred to ⑦), and the held attack, re-entering ③ on resume, is rejected here before it can swing — and likewise the second strike of a **Windfury command** fizzles if the first retaliation mortally wounded the neutral. **This fizzle is the *attacker's* concern only — never the defender's retaliation.** Eligibility (③) gates the *active swing* of an `AttackAction` / `CommandAttackAction`; a defender's **retaliation** is a separate `DealDamageAction` whose source is the defender, and it is **not** subject to this check — so a **mortally-wounded defender still retaliates with full effect** (live keywords + stats, because death is deferred to ⑦). A minion killed-but-not-removed swings back; it just cannot *initiate* a fresh swing. (`canAttack`/`attacksUsedThisTurn` are inert for a neutral under `CommandAttackAction`: `canAttack` is pinned true and the used-counter is not consulted — command is a card-granted activation, not the minion's own budget. The aliveness and Taunt checks above still apply.)
 - Board space: player board has fewer than 7 minions before summoning → `BoardFull`
 
 **Validation is a pure, standalone-invokable predicate.** Stages ② and ③ together form a side-effect-free function `(action, state) → Ok | Rejection` (where `Rejection` is the `ActionRejection` of §2C) — no mutation, no dispatch (④), no events. It is the **single source of truth for legality**: `Submit` runs it before ④, and any "is this action legal?" / "what actions are legal?" query — a future `GetLegalActions(playerId)`, bot move generation, or client pre-flight (greying out unaffordable cards / illegal targets) — **must call this same predicate** rather than re-deriving legality. This guarantees previewed/enumerated legality can never drift from what `Submit` actually accepts. (The positive-enumeration API itself — `GetLegalActions`, via brute-force-then-filter over candidate actions — is deferred to the future bot-support epic; only the standalone-predicate seam is part of the core.)
@@ -839,7 +853,10 @@ Auto reactions (secrets, board triggers) do **not** open ⑥′ windows — they
 **Settle stage — runs only when the action queue has drained to empty** (the cascade started by a top-level action has fully settled), never mid-cascade. While the queue is non-empty the engine stays in ①–⑥, so every triggered reaction resolves first and a mortally-wounded minion remains on the board (targetable, countable, keyword-active — and savable by a dying-window **save-from-lethal** intervention — a player responding to lethal damage to rescue it before removal, the "R1" avenue in amendment B) right up to this point. Then `DeathResolutionService` runs the wave loop:
 
 1. **Collect** all minions with `currentHealth ≤ 0` or marked for destruction. Sort: current player `board[0..n]` → opponent `board[0..n]` → neutral zone by index. If none, exit loop. Otherwise publish `DeathWaveStartedEvent { waveIndex }` (0-based, incremented per wave).
-2. **Phase 1 — Remove & grieve:** for each in sort order — remove from board, add `GraveyardEntry`, publish `MinionDiedEvent`.
+2. **Phase 1 — Remove & grieve:** for each in sort order — remove from board, build a `GraveyardMinion` from its death state (`snapshot`; **no card is fabricated here** — the card form is produced lazily at point of use, §1), **route it to a graveyard**, then publish `MinionDiedEvent`. Routing reads exactly two inputs:
+   - `ownerId != null` → **that player's** `graveyard` (a controlled minion — including a once-`bornNeutral` body taken over via `TakeControlAction` — grieves to its controller).
+   - `bornNeutral && ownerId == null` → the shared `GameState.neutralGraveyard` (a system-spawned neutral that died in the neutral lane).
+   - `!bornNeutral && ownerId == null` → **undefined, asserts** — no in-scope path creates a player-originated body in the neutral lane (`TakeControlAction` only ever moves bodies *out*). See Unaddressed Features, "A non-`bornNeutral` body dying in the neutral lane."
 3. **Phase 2 — Deathrattles:** for each in sort order — call `ICardHandler.OnDeath`, which enqueues this minion's deathrattle actions. Process the full action queue (steps ④–⑥ run for each). New deaths during this phase are deferred to the next wave. Minions summoned during this phase are registered with the `birthEpoch` of their own `SummonMinionAction`, so the creation-epoch filter (§3 `IEventBus`) keeps them from reacting to `MinionDiedEvent`s already published in this wave — they react only to events from subsequent actions.
 4. **Phase 3 — Reborns:** for each minion in the current wave with the Reborn keyword **and** `rebornAvailable == true` (in sort order) — enqueue `SummonMinionAction` at 1 HP. Process fully. Run aura recalculation. The reborn copy **keeps the Reborn keyword** but is summoned with `rebornAvailable = false`, so it cannot reborn again (if it dies it goes to graveyard normally). The keyword still counts for auras and survives bounce. A *copy* made of that spent minion is a fresh summon → `rebornAvailable` re-initializes to `true` from the keyword, so the clone reborns if it dies.
 5. Publish `DeathWaveEndedEvent { waveIndex, minionsResolved }`. Back to step 1 (next wave).
@@ -953,3 +970,12 @@ A minion's **keyword hooks (Lifesteal, Poisonous, …) do not apply to damage it
 - **"Dead" here means *removed*, not *mortally wounded* (amendment B):** a minion at ≤0 HP that is still on the board (pending death, before the settle) is *fully keyword-active* — if it deals damage in that window (e.g. a dying-swing retaliation), its Lifesteal/Poisonous etc. *do* fire, because `EffectiveKeywords(source)` reads it from the live board. The limitation applies only once the death wave's Phase 1 has actually removed the source.
 - **Cost to enable:** a death-snapshot fallback — when the source is dead, the relevant handler reads keywords off the source's `GraveyardMinion.snapshot` instead of live board state. A localized fallback in the affected handlers, not a parallel mechanism.
 - **Status:** no card in scope needs it. Revisit only when one does.
+
+### A non-`bornNeutral` body dying in the neutral lane
+
+The §4 ⑦ Phase-1 graveyard-routing rule reads exactly two inputs — `bornNeutral` (origin) and `ownerId` (lane) — and defines **two** destinations: `bornNeutral && ownerId == null` → the shared neutral graveyard; `ownerId != null` → that player's graveyard. The third combination, **`!bornNeutral && ownerId == null`** (a *player-originated* body dying *in* the neutral lane), is **deliberately left undefined** — it routes to neither, and the engine treats reaching it as an assertion gap rather than silently picking a graveyard.
+
+- **Why it can't happen yet:** nothing in scope moves a player-originated minion into the neutral lane. `bornNeutral` is set **only** by the system `SpawnNeutralMinionAction`; control (`TakeControlAction`) only ever moves bodies *out* of the lane (into a player's board, giving them an `ownerId`), never in.
+- **What would reach it (signalled, not committed):** a future **"release a player minion to neutral"** effect, or a **"player card that summons into the neutral lane."** Both produce a body that is in the neutral lane (`ownerId == null`) yet not `bornNeutral`.
+- **Cost to enable:** an **owner-of-record** on the minion (the controller it should grieve back to when it dies neutral) — a new nullable field plus a routing branch. Intentionally **not** added now: there is no field to populate and no card to populate it, so adding it would be speculative.
+- **Status:** open by design. Whoever introduces a player→neutral path owns defining this branch.
