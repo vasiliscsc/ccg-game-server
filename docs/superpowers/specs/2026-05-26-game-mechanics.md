@@ -76,7 +76,9 @@ isInverted: bool
 summoningSick: bool           // raw fact (replaces the old derived `canAttack` bool): true while this minion entered a board THIS turn and has not yet woken at its controller's turn-start. Set on board-entry by BOTH summon and control; cleared by the turn-start sweep (Turn Lifecycle step 6). Attack eligibility — including the Charge-any-target / Rush-minions-only distinction — is PULLED from effective keywords at §4 ③, never baked into a stored verdict here. Neutrals are never summoningSick (no turn of their own; command bypasses eligibility and retaliation is ungated).
 attacksUsedThisTurn: int      // raw counter, incremented on each attack; reset at the controller's turn-start sweep. The ONLY attack-state stored on the minion — the per-turn attack BUDGET is deliberately NOT a field: it is PULLED from effective keywords at §4 ③ (Windfury → 2, else 1; extensible to future budget-granting keywords), so it can never desync from the keyword (silencing Windfury drops the budget to 1 on the spot). NOT consulted for a neutral commanded via CommandAttackAction — command is a card-granted activation, not the minion's own budget (§2A / §4 ③).
 summonOrder: int              // monotonically increasing per session; used for trigger fire ordering
-isFrozen, isDamaged: bool
+isFrozen: bool                // frozen → cannot attack (§4 ③ AttackerFrozen)
+frozenOnTurn: int             // turn.number when the freeze landed (meaningful only while isFrozen); drives the end-of-turn thaw rule (Turn Lifecycle step 3 / §3 IKeyword Freeze)
+isDamaged: bool
 rebornAvailable: bool         // the one-time Reborn charge — distinct from the "reborn" keyword tag, which persists. Initialized at summon to keywords.Contains("reborn"); the reborn-summon path summons with it false; consuming it (NOT the keyword) is what reborn does. See §4 ⑦.
 // TRIGGERS — not stored as fields. This minion's ITrigger(s), Deathrattle, and keyword-hooks are registered into IEventBus by its ICardHandler (resolved via definitionKey) at summon (OnSummon, ④) and dropped when it leaves the board. Live by virtue of the board zone (§3 "Reactive Triggers, Interventions & Interception"). The bus carries only ITrigger; keywords are pulled from the effective `keywords` view (§3 IKeyword), not subscribed.
 ```
@@ -243,7 +245,7 @@ All actions carry a nullable `SourcePlayerId` (null = system-issued) and a `Requ
 | Action | Key fields |
 |---|---|
 | `PlayCardAction` | playerId, cardId, targetId? |
-| `AttackAction` | attackerId, targetId. **Handler (④), after ③ re-validation:** (1) snapshot the attacker's effective **base attack** (HS-style attack-lock; damage *modifiers* are pulled later, per `DealDamageAction` ④); (2) **consume the activation** — `attacksUsedThisTurn++`; (3) **break Stealth** if the attacker has it — an own-moment of *attacking*: clear the Stealth keyword and emit `StealthBrokenEvent` (attacking is what drops Stealth; merely being targeted/dealing non-attack damage does not — closes the Stealth half of hole #4); (4) emit `AttackPerformedEvent { attackerId, targetId }` (the post-interception **actual** target); (5) **enqueue two independent `DealDamageAction`s** — the strike (attacker → target, amount = the snapshotted attack) and, iff the defender's attack > 0, the retaliation (defender → attacker) — processed **sequentially, not atomically** (§3). **Freeze interaction:** a frozen attacker never reaches ④ (rejected at §4 ③ `AttackerFrozen`); the `attacksUsedThisTurn` consumed in step 2 is also the input the end-of-turn **unfreeze** sweep reads — a character frozen *after* it has used its attack(s) thaws at end of turn, one frozen *while still able to attack* stays frozen (the precise `frozenOnTurn`-style thaw tracking is the remaining half of hole #4). |
+| `AttackAction` | attackerId, targetId. **Handler (④), after ③ re-validation:** (1) snapshot the attacker's effective **base attack** (HS-style attack-lock; damage *modifiers* are pulled later, per `DealDamageAction` ④); (2) **consume the activation** — `attacksUsedThisTurn++`; (3) **break Stealth** if the attacker has it — an own-moment of *attacking*: clear the Stealth keyword and emit `StealthBrokenEvent` (attacking is what drops Stealth; merely being targeted/dealing non-attack damage does not — closes the Stealth half of hole #4); (4) emit `AttackPerformedEvent { attackerId, targetId }` (the post-interception **actual** target); (5) **enqueue two independent `DealDamageAction`s** — the strike (attacker → target, amount = the snapshotted attack) and, iff the defender's attack > 0, the retaliation (defender → attacker) — processed **sequentially, not atomically** (§3). **Freeze interaction:** a frozen attacker never reaches ④ (rejected at §4 ③ `AttackerFrozen`); conversely the `attacksUsedThisTurn` consumed in step 2 feeds the end-of-turn unfreeze sweep (Turn Lifecycle step 3) — a character frozen **this turn while exhausted** (it had already swung) **stays** frozen through its next turn, one frozen while it **still had an attack thaws** at the end of this turn, so Freeze costs exactly one attack. |
 | `UseHeroPowerAction` | playerId, targetId? |
 | `EndTurnAction` | playerId |
 | `SubmitMulliganAction` | playerId, cardIdsToKeep[] |
@@ -271,7 +273,7 @@ All actions carry a nullable `SourcePlayerId` (null = system-issued) and a `Requ
 | `UnInvertTargetAction` | targetId, sourceId? |
 | `BuffMinionAction` | minionId, attackDelta, healthDelta, sourceId |
 | `SilenceMinionAction` | minionId, sourceId? |
-| `FreezeTargetAction` | targetId, sourceId? |
+| `FreezeTargetAction` | targetId, sourceId? — sets `isFrozen = true` and stamps `frozenOnTurn = turn.number` on the target; emits `MinionFrozenEvent`. Thawing is the end-of-turn unfreeze sweep (Turn Lifecycle step 3), never here. (Freezing a **hero** needs the same `isFrozen`/`frozenOnTurn` pair on `PlayerState` — deferred with the hero-combat pass; see Unaddressed Features.) |
 | `ModifyManaAction` | playerId, delta, sourceId? |
 | `ShuffleDeckAction` | playerId, sourceId? |
 | `DiscardCardAction` | playerId, cardId? (null = random), sourceId? |
@@ -338,6 +340,7 @@ All events carry an `OccurredAt` timestamp and an `originEpoch: int` (the `curre
 |---|---|
 | `MinionSilencedEvent` | minionId |
 | `MinionFrozenEvent` | minionId |
+| `MinionThawedEvent` | minionId — frozen status cleared by the end-of-turn unfreeze sweep (Turn Lifecycle step 3). |
 | `MinionInvertedEvent` | minionId, isInverted |
 | `CardInvertedEvent` | cardId, playerId, isInverted |
 | `DivineShieldBrokenEvent` | minionId |
@@ -497,7 +500,7 @@ foreach (var kw in EffectiveKeywords(source).OfType<IOnDealtDamage>())
     kw.OnDealtDamage(source, target, amount, state, queue);
 ```
 
-Further "own-moment" hook points (on-take-damage, on-attack, …) are added as new role interfaces when a card first needs one; each is invoked the same way by its owning handler. **Freeze** is not a keyword hook — it is a status (`isFrozen`) set by `FreezeTargetAction` and cleared by the turn-lifecycle unfreeze sweep (§4 Turn Lifecycle step 4).
+Further "own-moment" hook points (on-take-damage, on-attack, …) are added as new role interfaces when a card first needs one; each is invoked the same way by its owning handler. **Freeze** is not a keyword hook — it is a status: `FreezeTargetAction` sets `isFrozen = true` and stamps `frozenOnTurn = turn.number` (`MinionFrozenEvent`), and a frozen character cannot attack (§4 ③ `AttackerFrozen`). It thaws in the **end-of-turn unfreeze sweep** (§4 Turn Lifecycle step 3), which thaws the ending player's frozen characters **unless** the freeze landed *this* turn while the character was already exhausted — so Freeze costs **exactly one attack**: a character frozen with an attack still available misses that turn and thaws at its end, while one frozen *after* it has swung (e.g. into a retaliation-freezer) stays frozen through its next turn.
 
 ### `IEffect`
 
@@ -912,8 +915,8 @@ The `EndTurnAction` handler and subsequent system actions implement the full tur
 
 1. Publish `TurnEndedEvent`
 2. Fire End-of-Turn triggers (current player L→R, then opponent L→R)
-3. Swap active player
-4. Unfreeze minions frozen during the previous turn
+3. **Unfreeze sweep — for the player whose turn is ENDING** (before the swap, so the freeze actually costs an attack rather than thawing at the start of the controller's turn): thaw each frozen character they control **unless** it was frozen *this* turn while exhausted — i.e. keep frozen iff `frozenOnTurn == turn.number && attacksUsedThisTurn >= budget` (the same exhaustion test as `AttackerExhausted`, §4 ③); otherwise set `isFrozen = false`, clear `frozenOnTurn`, emit `MinionThawedEvent`. This makes Freeze cost exactly one attack (a character frozen after swinging stays frozen through its next turn; one frozen on the opponent's turn, or this turn before swinging, thaws at the end of the turn it was unable to act).
+4. Swap active player
 5. Increment `maxMana` (cap 10), restore `mana` to `maxMana`
 6. Clear `summoningSick` (wake) and reset `attacksUsedThisTurn` on all of the new active player's minions
 7. Reset `heroPowerUsedThisTurn`, `cardsPlayedThisTurn`
@@ -986,3 +989,11 @@ The §4 ⑦ Phase-1 graveyard-routing rule reads exactly two inputs — `bornNeu
 - **What would reach it (signalled, not committed):** a future **"release a player minion to neutral"** effect, or a **"player card that summons into the neutral lane."** Both produce a body that is in the neutral lane (`ownerId == null`) yet not `bornNeutral`.
 - **Cost to enable:** an **owner-of-record** on the minion (the controller it should grieve back to when it dies neutral) — a new nullable field plus a routing branch. Intentionally **not** added now: there is no field to populate and no card to populate it, so adding it would be speculative.
 - **Status:** open by design. Whoever introduces a player→neutral path owns defining this branch.
+
+### Freezing a hero
+
+`FreezeTargetAction` can target a **hero**, but only minion freeze is modelled — `isFrozen`/`frozenOnTurn` live on `MinionOnBoard`, not `PlayerState`.
+
+- **Why deferred:** a hero attacks via its weapon, and the **hero-combat path itself is only lightly specced** (weapon swing, `heroAttack`, durability) — bolting hero-freeze on now would leave half-wired state. The thaw **rule** is identical to a minion's; what's missing is the storage and wiring.
+- **Cost to enable:** add `heroIsFrozen`/`heroFrozenOnTurn` to `PlayerState`, have §4 ③ read the character-appropriate `isFrozen` when the attacker is a hero, fold heroes into the step-3 unfreeze sweep, and add hero freeze/thaw events (`HeroFrozenEvent`/`HeroThawedEvent`).
+- **Status:** do it as part of the hero-combat pass; the freeze-thaw rule is already complete and applies unchanged.

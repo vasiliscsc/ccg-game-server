@@ -765,6 +765,25 @@ A free-form Q/A sweep for spec gaps, distinct from the 13-item borrow list and t
 - **Epic 02/04 (events + combat):** drop `AttackResolvedEvent`; add `AttackPerformedEvent` (④) + `StealthBrokenEvent`; `AttackAction` handler emits them and enqueues the two `DealDamageAction`s. Tests: attack emits Declared(③′)→Performed(④)→two DamageTaken; redirect → Declared(intended) but Performed/DamageTaken(actual); stealthed attacker → `StealthBrokenEvent` on its first swing; renderer reconstructs combat with no AttackResolved.
 - **Hole #4 now half-closed:** Stealth-on-attack done; only Freeze `frozenOnTurn` thaw tracking remains.
 
+### Hole #4 (freeze half) — Freeze thaw rule + timing (2026-06-08)
+
+**Two bugs found:** (1) the lifecycle unfroze at **step 4, *after* the active-player swap** — i.e. at the *start* of the controller's turn — which would thaw a minion *before* it was meant to miss its attack, negating Freeze entirely; (2) my hole-#1 `AttackAction` note had the thaw condition **inverted** (claimed frozen-after-attacking thaws, frozen-while-able stays — the reverse of the real rule). Plus there was no `frozenOnTurn` field to evaluate any rule against.
+
+**✅ DECISION (2026-06-08): HS-faithful "Freeze costs exactly one attack" rule. APPLIED to spec §1/§2/§3/§4.**
+
+- **Field:** `MinionOnBoard.frozenOnTurn: int` (stamped `= turn.number` by `FreezeTargetAction`, valid while `isFrozen`).
+- **Timing moved to END of the ending player's turn** (Turn Lifecycle **step 3**, after end-of-turn triggers, **before** the swap) — for that player's frozen characters.
+- **Rule:** thaw **unless** frozen *this* turn while exhausted — keep iff `frozenOnTurn == turn.number && attacksUsedThisTurn >= budget` (reuses the `AttackerExhausted` test). On thaw: `isFrozen = false`, clear `frozenOnTurn`, emit new **`MinionThawedEvent`**.
+- **Why it's correct (Water-Elemental check):** a minion that swings into a retaliation-freezer is frozen *after* exhausting → stays frozen through its **next** turn (misses next attack); a minion frozen on the opponent's turn, or this turn before swinging, thaws at the end of the turn it couldn't act (misses that one attack). Either way: exactly one attack lost.
+- **Hero freeze DEFERRED** (recorded in Unaddressed Features): `FreezeTargetAction` accepts a hero, but `isFrozen`/`frozenOnTurn` live on `MinionOnBoard` only; hero-freeze needs `PlayerState.heroIsFrozen/heroFrozenOnTurn` + hero freeze/thaw events + ③ wiring, which belongs with the (lightly-specced) hero-combat path. The thaw rule itself is complete and applies unchanged.
+
+**Hole #4 is now fully closed** (Stealth half in hole #1; Freeze half here), modulo the recorded hero-freeze deferral.
+
+**Plan impact:**
+- **Epic 01 (data model):** `MinionOnBoard.frozenOnTurn`.
+- **Epic 02 (events):** `MinionThawedEvent`.
+- **Epic 04 / turn lifecycle:** move the unfreeze sweep to end-of-ending-player's-turn (pre-swap) with the exhausted-when-frozen-this-turn rule; `FreezeTargetAction` stamps `frozenOnTurn`. Tests: freeze on opponent's turn → can't attack next turn, thaws at its end; Water-Elemental (frozen after swinging) → frozen through next turn; freeze a friendly un-swung minion → misses this turn only, thaws same end-of-turn; Windfury frozen after one of two swings (not exhausted) → thaws end of turn.
+
 ---
 
 ## Topics deliberately omitted
