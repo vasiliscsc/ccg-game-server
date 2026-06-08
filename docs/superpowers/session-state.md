@@ -99,6 +99,27 @@ Open Q/A sweep for spec holes (distinct from the 13-item borrow list and the Fir
 
 **Still-open holes** (#1, #3+follow-on, #4 done): **#2** fatigue not in the data model (no counter on `PlayerState`, no action/event, yet `HeroMortallyWoundedEvent` lists `fatigue` as a cause). **Recorded deferrals:** temporary control; `!bornNeutral`-dies-in-neutral routing; hero freeze. Resume by picking #2, a deferral, or continuing the open Q/A.
 
+### Session 6 (2026-06-09): intervention multi-card resolution — MTG-style re-declare/re-offer loop (DECIDED + APPLIED)
+
+Continued the open Q/A hole-hunting, **revisiting point D (interventions)**. The user probed: what if a player holds **multiple** intervention cards matching the **same** event? The ③′ procedure was written in the singular ("the single-response window") with no multi-match rule — an underspecified hole (⑥′ had "one window per matched card, hand order"; ③′ had no parallel). Full record + Plan impact in the borrow-list note's **"Hole #6"**. Summary of what landed in the spec (§1/§2/§3/§4):
+
+- **MTG-style loop, both phases.** Window is **set-valued** (`PendingIntervention.candidateCardIds` = matching + **affordable** reactive hand cards); player plays one (`SubmitInterventionAction { chosenCardId?, targetIds[]? }`) or skips. **PRE = re-declare loop** (held action re-published to ③′ after each play — **reverses the old "declared once / not re-published" rule**; fizzle on re-validation ends the loop and gives sibling "withdrawal" for free). **POST = re-offer loop** (no held action; re-offer remaining matched set against frozen events, lapsed-condition cards drop out).
+- **Skip terminates; only a play re-opens** (a skip changes nothing → re-presenting the same set is pointless). Skip does **not** consume the card (stays armed for future events). Replaces the old ⑥′ per-card-in-hand-order rule; replay determinism = logged choices.
+- **Iteration ≠ nesting.** Depth-1 **kept**, but caps **nesting only** (a response can't be intervened). **Iteration** (one responder chaining their own cards on one action) is uncapped by count — different axis, self-bounding (played cards leave hand).
+- **Termination = mana, no hard cap** (user's call). Pay-on-response from `mana`; only residual is 0-cost-begets-0-cost (Item-1 stabilization cap is the backstop).
+- **Mana model — user's simplification (replaced my `reservedMana` proposal mid-edit).** **Moved the mana ramp+restore from turn-START to turn-END.** The refreshed pool sits through the opponent's turn; interventions spend straight from `mana` (ordinary `effectiveCost ≤ mana`); your next turn begins with the remainder. **No `reservedMana` field, no special ceiling**; ceiling = full ramped next-turn pool. Outcome-identical to HS on your own turns — only bookkeeping moved. Caveats in-spec: game-init seeds turn-1 mana; future overload applies at this turn-end refresh.
+- **Worked-example answer** (user's "already-queued actions" question): a strike's ⑥′ responses resolve **immediately, ahead of** the already-queued retaliation + the attacker's draw — the ⑥′ window is a checkpoint inside the cascade at the triggering action's position, not behind the queue (`spec` §4 "Response resolution"; combat-as-two-actions per-hit reaction, `spec:698`).
+
+**Spec edits APPLIED** across §1 (`PendingIntervention.candidateCardIds`; no `reservedMana`), §2 (`SubmitInterventionAction`/`StartInterventionAction`), §3 (pillar-2 pre/post, ordering-table Interception + Post-reaction rows, hand-zone row), §4 (③′ re-declare loop + depth-1-nesting reword, ⑥′ re-offer loop, Response-resolution loop continuation, PendingIntervention Interruption full rewrite incl. Batching's two granularities, **Turn Lifecycle mana refresh moved to step 4 / turn-end**). Re-grepped clean (no stale `single-response` / `declared once` / `not re-published` / `one window per matched card` / `reservedMana`; the two remaining matches are the intentional supersede note and the combat-atomicity rationale).
+
+### ⏹ SESSION STOP (2026-06-09, end of session 6)
+
+**State:** session-6 spec edits applied + (pending) committed. **Open holes unchanged:** only **#2 fatigue** remains from the menu (not modelled — no `PlayerState` counter, no `FatigueDamage` action/event, yet `HeroMortallyWoundedEvent` lists `fatigue` as a cause). **Recorded deferrals:** temporary control; `!bornNeutral`-dies-in-neutral routing; hero freeze; hero-combat pass; the 0-cost-intervention-loop residual (no cap, per user's resource-bound call).
+
+**▶ RESUME OPTIONS (user drives one):** (a) **#2 fatigue**; (b) a **recorded deferral** / hero-combat pass; (c) keep **probing** (open Q/A) or call hole-hunting done; (d) the **end-of-pass plan reconciliation** (apply all `Plan impact:` lists; sweep old field names `canAttack`/`attacksAllowedThisTurn`/`originalCard` in plan/README; note session-6 also moves the mana-refresh step + adds `candidateCardIds`/`SubmitInterventionAction` shape) → implementation at **Epic 01 / T1.1**.
+
+**Methodology note:** session 6 again corrected one of *my own* over-builds — I proposed a `reservedMana` field; the user replaced it mid-edit with the simpler "refresh mana at turn-end" model (one fewer field, resolves the ceiling question for free). Keep reaching for the leaner state-model when an equivalent reframe exists.
+
 ### ⏹ SESSION STOP (2026-06-08, end of session 5)
 
 **State:** ALL session-5 work committed + pushed to `origin/main` — working tree clean, `main` in sync with remote (verified). Commit trail (chronological):
