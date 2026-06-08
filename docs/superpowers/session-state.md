@@ -116,7 +116,14 @@ Continued the open Q/A hole-hunting, **revisiting point D (interventions)**. The
 
 ### ⏹ SESSION STOP (2026-06-09, end of session 6)
 
-**State:** session-6 spec edits applied + (pending) committed. **Open holes unchanged:** only **#2 fatigue** remains from the menu (not modelled — no `PlayerState` counter, no `FatigueDamage` action/event, yet `HeroMortallyWoundedEvent` lists `fatigue` as a cause). **Recorded deferrals:** temporary control; `!bornNeutral`-dies-in-neutral routing; hero freeze; **hero armor** (`PlayerState.armor` + `GainArmorAction` + ④ precedence slot); hero-combat pass; the 0-cost-intervention-loop residual (no cap, per user's resource-bound call).
+**State:** ALL session-6 work committed + pushed to `origin/main` — working tree clean, `main` in sync with remote (verified). Commit trail (chronological):
+- `a7be11d` — hole #6: MTG-style intervention loop (re-declare/re-offer, set-valued window, depth-1 caps nesting only) + turn-end mana refresh (dropped `reservedMana`)
+- `b360eab` — depth-1 wording scoped to player windows + hero-armor gap logged (Unaddressed Features)
+- `ed9fc46` — 4 queued topics logged for next session
+
+Spec re-grepped clean (no stale `single-response` / `declared once` / `not re-published` / `one window per matched card` / `reservedMana` / `cannot itself be intervened`). Spec believed internally consistent.
+
+**Open holes unchanged:** only **#2 fatigue** remains from the menu (not modelled — no `PlayerState` counter, no `FatigueDamage` action/event, yet `HeroMortallyWoundedEvent` lists `fatigue` as a cause). **Recorded deferrals:** temporary control; `!bornNeutral`-dies-in-neutral routing; hero freeze; **hero armor** (`PlayerState.armor` + `GainArmorAction` + ④ precedence slot); hero-combat pass; the 0-cost-intervention-loop residual (no cap, per user's resource-bound call).
 
 **▶ RESUME OPTIONS (user drives one):** (a) **#2 fatigue**; (b) a **recorded deferral** / hero-combat pass; (c) keep **probing** (open Q/A) or call hole-hunting done; (d) the **end-of-pass plan reconciliation** (apply all `Plan impact:` lists; sweep old field names `canAttack`/`attacksAllowedThisTurn`/`originalCard` in plan/README; note session-6 also moves the mana-refresh step + adds `candidateCardIds`/`SubmitInterventionAction` shape) → implementation at **Epic 01 / T1.1**.
 
