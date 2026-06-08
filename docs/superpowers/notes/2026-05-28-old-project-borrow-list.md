@@ -816,6 +816,17 @@ A free-form Q/A sweep for spec gaps, distinct from the 13-item borrow list and t
 
 ---
 
+## Queued topics — to investigate next (logged 2026-06-09, session 6)
+
+Raised but not yet worked. Distinct from "deliberately omitted" below (those are rejected); these are open items awaiting a session.
+
+1. **Trigger ordering = deathrattle ordering (active player first, then left→right).** Assert/confirm that the *general* trigger fire order and the death-wave (deathrattle) sort order are **the same rule** — active player first, then by board index L→R. The Ordering table currently states them as two rows ("Trigger fire order" line; "Death sort order" line) that *look* consistent but mention neutral differently (death sort includes the neutral zone last; trigger order doesn't spell out neutral). Reconcile, pin neutral's slot in trigger order, and de-duplicate to one stated rule.
+2. **Neutral-lane auras.** Spec says *player* auras don't reach neutral minions while neutral. Open: do **neutral minions emit auras**, and to whom (each other? the neutral lane only? never players?); can any aura ever affect the neutral lane? Needs a rule for aura source/scope across the third zone.
+3. **Debug text format for `GameState`, the action queue, and the event stream.** A human-readable rendering for debugging + scenario authoring — cf. the old Unity project's Spine/Exact traces ([[reference-old-unity-project]]) and the existing `StabilizationAbortReport` scenario-repro format. Define a canonical textual dump so a developer can read/diff state and cascades.
+4. **Visibility of the action being intervened on.** When a window opens, what does the **responder** see about the triggering action/event — the held action's params at ③′ (attacker/target/amount), the matched events at ⑥′? This is the responder's-eye dual of the already-deferred secret/hand-live **visibility** question (hidden vs telegraphed); pin what information the intervening player is shown.
+
+---
+
 ## Topics deliberately omitted
 
 These came up in the investigation but don't merit changes:

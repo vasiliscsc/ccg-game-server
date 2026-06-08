@@ -120,6 +120,12 @@ Continued the open Q/A hole-hunting, **revisiting point D (interventions)**. The
 
 **▶ RESUME OPTIONS (user drives one):** (a) **#2 fatigue**; (b) a **recorded deferral** / hero-combat pass; (c) keep **probing** (open Q/A) or call hole-hunting done; (d) the **end-of-pass plan reconciliation** (apply all `Plan impact:` lists; sweep old field names `canAttack`/`attacksAllowedThisTurn`/`originalCard` in plan/README; note session-6 also moves the mana-refresh step + adds `candidateCardIds`/`SubmitInterventionAction` shape) → implementation at **Epic 01 / T1.1**.
 
+**▶ QUEUED TOPICS (logged 2026-06-09 for next session — full detail in the borrow-list note's "Queued topics" section):**
+1. **Trigger ordering = deathrattle ordering** — confirm/unify that general trigger fire order and death-wave sort order are one rule (active player first, then L→R by board index); pin neutral's slot in trigger order; de-duplicate the two Ordering-table rows.
+2. **Neutral-lane auras** — do neutral minions emit auras, to whom; can any aura affect the neutral lane? (Spec only says *player* auras don't reach neutral minions while neutral.)
+3. **Debug text format** — readable rendering of `GameState` + action queue + event stream for debugging/scenario authoring (cf. old-project Spine/Exact traces + the `StabilizationAbortReport` repro format).
+4. **Intervention visibility** — what the responding player sees about the action/event they're intervening on (held-action params at ③′, matched events at ⑥′); responder's-eye dual of the deferred secret-visibility question.
+
 **Methodology note:** session 6 again corrected one of *my own* over-builds — I proposed a `reservedMana` field; the user replaced it mid-edit with the simpler "refresh mana at turn-end" model (one fewer field, resolves the ceiling question for free). Keep reaching for the leaner state-model when an equivalent reframe exists.
 
 ### ⏹ SESSION STOP (2026-06-08, end of session 5)
