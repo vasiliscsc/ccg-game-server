@@ -137,6 +137,23 @@ Closed the **last open hole from the menu**. The empty-deck draw was unspecified
 
 **Uncommitted:** session-7 spec edits + this state + the borrow-list note are in the working tree (not yet committed — the earlier session-state mirror sync is also uncommitted per the user's "leave it for now").
 
+### ⏹ SESSION STOP (2026-06-09, end of session 7)
+
+**State:** ALL session-7 work committed + pushed to `origin/main` — working tree clean, `main` in sync with remote. Commit trail (chronological):
+- `d3faf2e` — session-7 spec work: hole #2 fatigue + queued topics #1 (trigger ordering) + #2 (lane-based friendly/enemy + summon-event consolidation), plus the session-state data-model mirror re-sync. (One substance commit — the three decisions' edits interleave across the spec/note/state files, so they couldn't be cleanly split per-decision.)
+- `<this commit>` — session-7 stop block.
+
+**What session 7 was:** continued from the hole-hunting menu into the queued topics. Closed: **hole #2 fatigue**; **queued topic #1** (trigger order = deathrattle order → one canonical board order); **queued topic #2** (neutral-lane auras → a central **lane-based friendly/enemy** model, with the summon event consolidated so the neutral lane behaves like a regular lane). Also re-synced the session-state §1 data-model mirror (provenance note added). Per-decision records + Plan impact live in the borrow-list note ("Hole #2", "Queued topics" #1 and #2). Spec re-grepped clean each round (no stale `cause` field-writes, no "fires once"/"not re-declared", no controller-based friendly phrasing, no live `NeutralMinionSpawnedEvent`, no "player auras do not apply").
+
+**Open holes: NONE from the hole-hunting menu** (#1, #2, #3+follow-on, #4, #6 all done). **Queued topics remaining: #3 debug text format, #4 intervention visibility** (both more standalone than #1/#2 were). **Recorded deferrals unchanged:** temporary control; `!bornNeutral`-dies-in-neutral routing; hero freeze; hero armor; hero-combat pass; the 0-cost-intervention-loop residual.
+
+**▶ RESUME OPTIONS (user drives one):**
+- **(a)** the remaining **queued topics** — **#3 debug text format** (human-readable `GameState`/queue/event-stream dump for debugging + scenario authoring; cf. old-project Spine/Exact traces + the `StabilizationAbortReport` repro format) or **#4 intervention visibility** (what the responder sees at ③′/⑥′; dual of the deferred secret-visibility question) — or **call hole-hunting/probing done**.
+- **(b)** a **recorded deferral** / the **hero-combat pass** (bundles hero freeze + hero armor + heroAttack/weapon/durability — several deferrals converge here).
+- **(c)** the **end-of-pass plan reconciliation** (apply every `Plan impact:` list to the epic/ticket files under `plans/2026-05-27-ccg-game-logic/`, create flagged new tickets/epics, update the README; sweep the plan/README for stale field names — `canAttack`/`attacksAllowedThisTurn`/`originalCard` — and the session-6/7 shape changes: `candidateCardIds`, turn-end mana step, `fatigueCounter`, `MinionSummonedEvent` as sole summon event, lane-based friendly/enemy) → then implementation at **Epic 01 / T1.1**.
+
+**Methodology note (carry forward):** session 7 again had the user correct two of *my* over-claims — the controller-based friendly/enemy reading (they reframed it lane-based, which generalized cleanly and even matched a literal `null==null` reading of the existing condition), and a topic-#1 overstatement where I'd lumped `FriendlyOnly` in with genuinely-empty turn/hero-context conditions. The user also supplied the crisp `enemy` predicate (`!=` && `!=null`) and the "neutral lane behaves like a regular lane" north-star that justified removing `NeutralMinionSpawnedEvent`. Keep presenting trade-offs + recommending, but expect the user to reframe toward the leaner/more-coherent model — verify against their reframes rather than defending the first framing. See [[feedback-design-fork-style]].
+
 ### ⏹ SESSION STOP (2026-06-09, end of session 6)
 
 **State:** ALL session-6 work committed + pushed to `origin/main` — working tree clean, `main` in sync with remote (verified). Commit trail (chronological):
