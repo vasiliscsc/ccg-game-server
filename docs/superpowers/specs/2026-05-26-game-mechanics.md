@@ -14,7 +14,7 @@
 sessionId: string
 player1: PlayerState
 player2: PlayerState
-neutralZone: MinionOnBoard[]          // ownerId = null; Taunt is per-LANE (a neutral Taunt forces attacks aimed INTO the neutral lane, but not attacks into the opponent lane — and vice versa; §4 ③); player auras do not apply
+neutralZone: MinionOnBoard[]          // ownerId = null. The neutral lane is a THIRD side (its own ownerId bucket), modeled as close to a player lane as possible so board-wide mechanics — triggers, auras, summon events — work out of the box. Taunt is per-LANE (a neutral Taunt forces attacks aimed INTO the neutral lane, but not into the opponent lane — and vice versa; §4 ③). Friendly/enemy is LANE-based (§3 `ITriggerCondition`): a player's friendly-scoped aura/trigger excludes the neutral lane, but a neutral minion's OWN friendly scope IS the neutral lane (so neutral minions buff/trigger off each other). Reaching the lane from a player effect needs an explicit `AllNeutralMinions`/`AllMinions` selector.
 neutralZoneConfig: NeutralZoneConfig? // null = no neutral zone in this game mode
 neutralGraveyard: GraveyardEntry[]    // single shared graveyard, owned by GameState (NOT per-player). A dead minion lands here iff bornNeutral && ownerId == null at death (system-spawned neutral that died in the neutral lane); see §4 ⑦ Phase 1 routing
 turn: TurnState
@@ -49,6 +49,7 @@ weapon?: WeaponOnHero
 heroPower: HeroPower
 heroPowerUsedThisTurn: bool
 cardsPlayedThisTurn: int      // Combo tracking
+fatigueCounter: int           // empty-deck-draw counter; init 0, persists all game, NEVER resets. Each draw from an empty deck does fatigueCounter++ THEN deals the new value to this hero (1,2,3,…) — see §2A DrawCardAction
 ```
 
 ### MinionOnBoard
@@ -262,7 +263,7 @@ All actions carry a nullable `SourcePlayerId` (null = system-issued) and a `Requ
 
 | Action | Key fields |
 |---|---|
-| `DrawCardAction` | playerId, sourceId? |
+| `DrawCardAction` | playerId, sourceId? — single-card draw. ④ handler, three branches: **(a)** deck non-empty, hand has room → move the top card to hand, emit `CardDrawnEvent`; **(b)** deck non-empty, hand full → burn it, emit `HandOverflowEvent`; **(c)** **deck empty → FATIGUE**: `fatigueCounter++`, emit `FatigueDamageEvent { amount = fatigueCounter }`, then enqueue `DealDamageAction { target = the player's hero, amount = fatigueCounter, sourceId = null }`. Fatigue is **sourceless** (null) even when an effect forced the draw, and carries **no special damage path** — routing through the one damage channel means it inherits ④ modifier precedence (so a future `PlayerState.armor` absorbs it automatically — hero-combat pass), interception/⑥′ windows, and the hero → `HeroMortallyWoundedEvent` → ⑧ settle path (deck-out loss, incl. mutual-deckout draw, falls out for free). Empty-deck and full-hand are mutually exclusive per draw (no card drawn ⇒ nothing to burn). A multi-card "draw N" effect enqueues N `DrawCardAction`s, so each empty-deck one ticks fatigue once. |
 | `DealDamageAction` | target: `entityId` **or** `ITargetSelector` (AoE — evaluated at ④ over the current board), amount, sourceId — **the one channel for all damage, combat included** (see §3 "Reactive…"). A selector-carrying instance is a single declared action → a single ③′ interception window. **Combat = two independent instances** (attacker strike + defender retaliation), each separately declared and processed sequentially — *not* one atomic unit (§3, 2026-06-06) |
 | `HealAction` | targetId, amount, sourceId |
 | `DestroyMinionAction` | minionId, sourceId? |
@@ -282,7 +283,7 @@ All actions carry a nullable `SourcePlayerId` (null = system-issued) and a `Requ
 | `ModifyManaAction` | playerId, delta, sourceId? |
 | `ShuffleDeckAction` | playerId, sourceId? |
 | `DiscardCardAction` | playerId, cardId? (null = random), sourceId? |
-| `SpawnNeutralMinionAction` | definitionKey, position?, sourceId? |
+| `SpawnNeutralMinionAction` | definitionKey, position?, sourceId? — summons a minion into the neutral lane (`ownerId = null`, `bornNeutral = true`), entering the board through the **same routine as a regular summon** (registers its `ICardHandler` triggers/keywords; `summoningSick` is moot — neutrals have no turn). Emits the regular **`MinionSummonedEvent` with `ownerId == null`** — *not* a neutral-specific event — so summon-watching mechanics fire out of the box. A summon, not a play ⇒ no Battlecry (matches `SummonMinionAction`). |
 | `StartChoiceAction` | waitingPlayerId, choiceType, options[], context |
 | `StartInterventionAction` | respondingPlayerId, heldAction? (null = post-reaction window — nothing held, e.g. a dying-window save), candidateCardIds[] (the responder's matching + affordable hand cards offered this window), timeoutSeconds |
 
@@ -310,6 +311,7 @@ All events carry an `OccurredAt` timestamp and an `originEpoch: int` (the `curre
 | `CardDrawnEvent` | playerId, card |
 | `CardAddedToHandEvent` | playerId, card (given by effect, not drawn) |
 | `HandOverflowEvent` | playerId, burnedCard |
+| `FatigueDamageEvent` | playerId, amount — the empty-deck draw outcome (sibling of `HandOverflowEvent`): announces the `fatigueCounter` bump (amount = the new counter) and telegraphs the impending self-damage. Fires at the `DrawCardAction` ④ handler **before** the enqueued fatigue `DealDamageAction` lands its `DamageTakenEvent` (same shape as `AttackPerformedEvent` → `DamageTakenEvent`). The dedicated event — not a flag on `DamageTakenEvent` — is how the client/telemetry knows a hero hit was fatigue (no damage-`cause` discriminator exists; see §2B Mana/Hero note). |
 | `CardPlayedEvent` | playerId, card, targetId? |
 | `CardDiscardedEvent` | playerId, card |
 | `CardReturnedToHandEvent` | playerId, card (bounced from board) |
@@ -319,13 +321,12 @@ All events carry an `OccurredAt` timestamp and an `originEpoch: int` (the `curre
 
 | Event | Key fields |
 |---|---|
-| `MinionSummonedEvent` | minion, ownerId? (null = neutral zone) |
-| `MinionMortallyWoundedEvent` | minionId, sourceId, cause — fires the instant a minion enters pending-death (currentHealth ≤0 from damage, maxHealth ≤0 from aura loss, or a destroy-mark), **before** the death-wave settle removes it; distinct from `MinionDiedEvent` (Phase-1 removal). The hook for dying-window reactions — e.g. a **save-from-lethal** intervention, where a player responds to lethal damage to rescue the minion before the settle removes it (the "R1" design avenue in the borrow-list note's amendment B). |
+| `MinionSummonedEvent` | minion, ownerId? — **the single summon event for every lane, neutral included** (`ownerId == null` ⇒ summoned into the neutral lane). A neutral spawn (`SpawnNeutralMinionAction`) emits this same event, so any "when a minion is summoned" trigger — including a lane-based `FriendlyOnly` one on a neutral minion reacting to its lane-mates — catches it out of the box. There is **no** separate neutral-summon event (the principle: the neutral lane behaves like a regular lane so mechanics work without special-casing). |
+| `MinionMortallyWoundedEvent` | minionId, sourceId — fires the instant a minion enters pending-death (currentHealth ≤0 from damage, maxHealth ≤0 from aura loss, or a destroy-mark), **before** the death-wave settle removes it; distinct from `MinionDiedEvent` (Phase-1 removal). The hook for dying-window reactions — e.g. a **save-from-lethal** intervention, where a player responds to lethal damage to rescue the minion before the settle removes it (the "R1" design avenue in the borrow-list note's amendment B). (No `cause` discriminator — it was informational only and nothing populated it; see Mana/Hero note below.) |
 | `MinionDiedEvent` | minionId, snapshot, sourceId, diedOnTurn |
 | `MinionTransformedEvent` | minionId, newCard |
 | `MinionControlChangedEvent` | minionId, fromOwnerId? (null = was neutral), toOwnerId — emitted by `TakeControlAction` after the minion is re-homed onto its new owner's board (summoning-sick on arrival; it may still act this turn if it has Charge/Rush — pulled at §4 ③). A commanded attack (`CommandAttackAction`) does **not** emit this — it changes no owner — it rides the ordinary combat events. |
-| `NeutralMinionSpawnedEvent` | minion |
-| `NeutralZoneRepopulatedEvent` | spawnedMinions[] |
+| `NeutralZoneRepopulatedEvent` | spawnedMinions[] — **renderer-only batch marker** for a turn-start neutral-zone repopulation (`NeutralZoneConfig.repopulateOnTurnStart`); carries no mechanic. The actual per-minion summons go through `SpawnNeutralMinionAction` → one `MinionSummonedEvent` each (so summon-watching triggers fire normally); this event is an optional summary the client may use to animate the batch, parallel to how `AttackDeclaredEvent` is a renderer convenience. *(The former separate `NeutralMinionSpawnedEvent` was removed — a neutral spawn is just a `MinionSummonedEvent` with `ownerId == null`.)* |
 | `DeathWaveStartedEvent` | waveIndex |
 | `DeathWaveEndedEvent` | waveIndex, minionsResolved |
 | `StabilizationAbortedEvent` | wavesReached, lastWaveMinionIds[] — fatal; always immediately followed by `GameEndedEvent { reason: NoContest }` |
@@ -358,7 +359,7 @@ All events carry an `OccurredAt` timestamp and an `originEpoch: int` (the `curre
 | Event | Key fields |
 |---|---|
 | `ManaChangedEvent` | playerId, mana, maxMana |
-| `HeroMortallyWoundedEvent` | playerId, sourceId, cause — fires the instant a hero crosses to ≤0 health (combat / spell / fatigue / self-damage), **before** the ⑧ win-check finalizes the loss; the hero analogue of `MinionMortallyWoundedEvent`, distinct from `GameEndedEvent` (the ⑧ finalization). The hook for save-the-hero reactions (heal-above-0 / immune in response to lethal — e.g. an Ice-Block-style effect realised as a post-reaction rather than damage prevention; for prevention see "Interception", §3). |
+| `HeroMortallyWoundedEvent` | playerId, sourceId — fires the instant a hero crosses to ≤0 health (from any damage — combat, spell, fatigue, self-damage), **before** the ⑧ win-check finalizes the loss; the hero analogue of `MinionMortallyWoundedEvent`, distinct from `GameEndedEvent` (the ⑧ finalization). The hook for save-the-hero reactions (heal-above-0 / immune in response to lethal — e.g. an Ice-Block-style effect realised as a post-reaction rather than damage prevention; for prevention see "Interception", §3). **No `cause` discriminator:** it was informational only (no card branches on it; save-from-lethal fires regardless of cause) and nothing in the engine populated it. Fatigue is identified by the `FatigueDamageEvent` that immediately precedes its `DealDamageAction`; other causes are reconstructable from the source/preceding events. Dropped rather than fed by a damage-cause taxonomy (YAGNI). |
 | `HeroPowerUsedEvent` | playerId, targetId? |
 | `WeaponEquippedEvent` | playerId, weapon |
 | `WeaponDestroyedEvent` | playerId, weapon |
@@ -373,7 +374,7 @@ All events carry an `OccurredAt` timestamp and an `originEpoch: int` (the `curre
 | `DeathrattleTriggeredEvent` | minionId |
 | `ComboTriggeredEvent` | cardId, playerId |
 | `InspireTriggeredEvent` | playerId |
-| `ActionDeclaredEvent` | action — the universal **pre-execution** signal: published at stage **③′** (§4) for every dispatched action *after* it validates and *before* it executes (④), carrying the action itself. The single hook for **interception** (declaration-phase) reactions; subscribers filter on the carried action's runtime type/params via the condition library, so **no per-action-type `*Declared` taxonomy is required**. Fires **once** per action — a held action resumed after interception is re-validated but **not** re-declared (prevents redirect/secret loops). **Bus-only: not a state delta, so excluded from the persisted event log and client wire format** (see the "Bus ⊋ log" note above). (The pre-existing typed `AttackDeclaredEvent` is the combat-specific declaration, retained for renderer convenience at the same timing; it is not the general hook.) |
+| `ActionDeclaredEvent` | action — the universal **pre-execution** signal: published at stage **③′** (§4) for every dispatched action *after* it validates and *before* it executes (④), carrying the action itself. The single hook for **interception** (declaration-phase) reactions; subscribers filter on the carried action's runtime type/params via the condition library, so **no per-action-type `*Declared` taxonomy is required**. Published afresh on **each (re-)declaration**: a held action resumed after a responder *played* an intervention re-validates and, if still legal, **re-declares** — re-publishing this event so the responder's remaining reactive cards get another window (the session-6 **re-declare loop**, §4 ③′); a **skip/timeout** resumes the held action without re-declaring. Redirect/secret loops are bounded not by suppressing re-declaration but by the **depth-1 nesting cap** (a response opens no further *player* window on itself) plus the responder's finite mana. **Bus-only: not a state delta, so excluded from the persisted event log and client wire format** (see the "Bus ⊋ log" note above). (The pre-existing typed `AttackDeclaredEvent` is the combat-specific declaration, retained for renderer convenience at the same timing; it is not the general hook.) |
 
 **Choice / Intervention:**
 
@@ -429,7 +430,9 @@ interface IActionHandler<TAction> where TAction : GameAction {
 
 ### `IEventBus`
 
-Broadcast backbone. Maintains two subscriber lists per event type: one for the current player's triggers and one for the opponent's. The current player's list always fires first. Within each list, subscribers are sorted by current board index at publish time — not at subscription time. This means a minion that fills a vacated slot fires in the position it currently occupies.
+Broadcast backbone. Dispatches in the **canonical board order** (see Deterministic Ordering): three ordered groups per event type — the current (active) player's triggers, then the opponent's, then the **neutral zone's** — fired in that sequence, and within each group sorted by current board index at publish time (not at subscription time, so a minion that fills a vacated slot fires in the position it currently occupies). The neutral group is the trigger-side counterpart of the neutral zone's last slot in the death sort; it makes trigger fire order and death sort order **one rule**.
+
+This applies to **board-wide event triggers** (on-damage, on-death, on-spell-cast, on-summon, …) — a neutral minion's `FriendlyOnly`-conditioned trigger fires off its **lane-mates** (friendly is lane-based; see `ITriggerCondition`), so neutral minions trigger off each other just as a player's do. It does **not** make neutral minions fire **turn/hero-context** triggers, which stay empty for want of a referent (not because of the friendly relation): **Start/End-of-Turn** (enumerated per player in the Turn Lifecycle — a neutral minion has no turn of its own), **Inspire** (no hero power), **Combo** (no hand / turn play-count). This is all condition semantics, not a bus special-case.
 
 ```csharp
 interface IEventBus {
@@ -563,7 +566,21 @@ interface ITriggerCondition {
 }
 ```
 
-`sourceId` is the trigger's host entity (the minion or hero the trigger belongs to). Conditions evaluate the event *relative to* the host — e.g. "friendly" means "owned by the same player as `sourceId`".
+`sourceId` is the trigger's host entity (the minion or hero the trigger belongs to). Conditions evaluate the event *relative to* the host. **Friendly/enemy is LANE-based** — i.e. by `ownerId`, treating the three lanes (player 1's board, player 2's board, the neutral lane) as the three "sides," with `null == null` meaning "same side":
+
+- **`friendly`** = same `ownerId` as the host. For a player-owned host this is its controller's board (Hearthstone-identical, since your board == minions you control); for a **neutral host (`ownerId == null`)** it is the **neutral lane** (the other `ownerId == null` minions). So a neutral minion's "friendly" effects target its lane-mates.
+- **`enemy`** = an *opposing* side. For a player host: the **opponent's board only** — the neutral lane is **not** enemy (it stays the separate `AllNeutralMinions` category, per the selector trichotomy). For a **neutral host**: **both** players' boards (everything off its lane). Deliberate asymmetry — a player sees three categories (friendly / enemy / neutral), a neutral minion sees two (its lane / everyone else); from a neutral source `friendly ∪ enemy` = all minions, from a player source it does not (neutral is the third bucket).
+
+Formally, for host `h` and the event's relevant entity `e`:
+
+```
+friendly(h, e)  ⟺  h.ownerId == e.ownerId          // null == null is true → neutral lane-mates are friendly
+enemy(h, e)     ⟺  h.ownerId != e.ownerId  &&  e.ownerId != null
+```
+
+The `e.ownerId != null` clause is what makes a **neutral minion never anyone's *enemy***: for a player host it keeps neutral out of "enemy" (the separate third category); the asymmetry — a neutral host *does* see both boards as enemy — falls out because that clause passes whenever `e` is a player minion. `friendly` and `enemy` are mutually exclusive; exhaustive only from a neutral host (a player host has the neutral "neither" bucket). Heroes carry their player's id, so the same predicates classify friendly/enemy heroes; neutral has no hero.
+
+Genuinely **controller/turn-context** conditions are a *different* axis and stay empty for a neutral host because it lacks the referent, not because of the friendly relation: Start/End-of-Turn (no turn of its own — §3 `IEventBus`), Inspire (no hero power), Combo (no hand / turn play-count).
 
 **Single conditions — parameterless singletons** (referenced by reference; no per-check allocation):
 
@@ -573,8 +590,8 @@ interface ITriggerCondition {
 | `SelfIsSource` | the event's acting/source entity is `sourceId` |
 | `SelfIsTarget` | the event's target entity is `sourceId` |
 | `SelfIsRelated` | the event's primary subject (e.g. the dying minion in `MinionDiedEvent`) is `sourceId` |
-| `FriendlyOnly` | the event's relevant entity is owned by the same player as `sourceId` |
-| `EnemyOnly` | the event's relevant entity is owned by the opponent of `sourceId` |
+| `FriendlyOnly` | the event's relevant entity is on the **same side** as `sourceId` (same `ownerId`, `null == null`) — for a neutral host, the neutral lane (see "friendly/enemy is lane-based" above) |
+| `EnemyOnly` | the event's relevant entity is on an **opposing side** — for a player host, the opponent's board (not neutral); for a neutral host, either player's board |
 
 **Single conditions — parameterized factories:**
 
@@ -628,7 +645,7 @@ interface ITargetSelector {
 }
 ```
 
-`Select` is a **pure function of `GameState`** (read via the context) — no mutation, no RNG, no enqueueing. Like the condition library it evaluates *relative to* the source: "enemy" means "opponent of `context.sourcePlayerId`".
+`Select` is a **pure function of `GameState`** (read via the context) — no mutation, no RNG, no enqueueing. Like the condition library it evaluates *relative to* the source, using the **same lane-based friendly/enemy predicates** (§3 `ITriggerCondition`): `AllFriendlyMinions` = minions sharing the source's `ownerId` (a neutral source's friendlies are the neutral lane); `AllEnemyMinions` = minions on an opposing side (`src.ownerId != m.ownerId && m.ownerId != null` — so a player source's enemy set excludes the neutral lane, which is the separate `AllNeutralMinions`; a neutral source's enemy set is both boards). `Self`, `FriendlyHero`, `EnemyHero` classify by the same rule (neutral has no hero).
 
 **Singletons — parameterless** (referenced by reference, no per-call allocation): `AllEnemyMinions`, `AllFriendlyMinions`, `AllNeutralMinions`, `AllMinions`, `AliveEnemyMinions`, `AliveFriendlyMinions`, `AliveNeutralMinions`, `AliveMinions`, `DeadEnemyMinions`, `DeadFriendlyMinions`, `DeadNeutralMinions`, `DeadMinions`, `EnemyHero`, `FriendlyHero`, `AllEnemyCharacters`, `AllFriendlyCharacters`, `Self`.
 
@@ -646,7 +663,7 @@ interface ITargetSelector {
 
 Each `Alive…` singleton is exactly `Filter(<corresponding All…>, currentHealth > 0)` and each `Dead…` is `Filter(<corresponding All…>, currentHealth ≤ 0)`, surfaced as named singletons for ergonomics. **Heroes have no mortally-wounded state** — a 0-health hero ends the game at §4 ⑧ rather than lingering — so there is no `Alive`/`Dead` hero/character variant. **Graveyard minions are *not* covered here:** an already-removed minion (resurrection / "died this turn" pools) is not a board target — selecting from the graveyard to *summon* is a separate primitive, not an `ITargetSelector`.
 
-**Ordering.** The returned list is **ordered by the canonical board order** already locked for death/trigger resolution (§4 ⑦): current player `board[0..n]` → opponent `board[0..n]` → neutral zone by index, with heroes slotted by the selector's own definition. Ordered, not unordered, because sequential within-action application (per-target damage, `DamageTakenEvent` emission order, keyword pulls) is order-sensitive and determinism demands a fixed order. (Deaths are no longer interleaved per hit — they settle at ⑦, amendment B — but the per-target application order still must be fixed.) Selectors never invent a second ordering.
+**Ordering.** The returned list is **ordered by the canonical board order** (Deterministic Ordering) shared with trigger fire order and death/deathrattle sort: current player `board[0..n]` → opponent `board[0..n]` → neutral zone by index, with heroes slotted by the selector's own definition. Ordered, not unordered, because sequential within-action application (per-target damage, `DamageTakenEvent` emission order, keyword pulls) is order-sensitive and determinism demands a fixed order. (Deaths are no longer interleaved per hit — they settle at ⑦, amendment B — but the per-target application order still must be fixed.) Selectors never invent a second ordering.
 
 **Three consumption modes** — a selector's candidate set covers every targeting feature with no new mechanism:
 
@@ -726,6 +743,8 @@ Aura-granted tribes and keywords flow through `AuraEffect.GrantedTribes` / `Gran
 
 **Aura recalc only rewrites lists; it never touches the bus.** Keywords are declarative markers pulled from the effective view at the minion's own action moments (§3 `IKeyword`) — no keyword subscribes to the bus — so an aura may grant **any** keyword, with no registration-during-recalc problem, and the grant disappears when the aura leaves. (Keyword-model collapse, 2026-06-02: the earlier active/declarative split — and its restriction that an *active* keyword could not be aura-granted because it would have to subscribe during stage ⑥ — was removed; see §3 `IKeyword` and the removal note under "Unaddressed Features".)
 
+**Aura scope & the neutral lane.** An aura's reach is entirely its `Calculate` — there is **no hardcoded neutral wall**; scope is the same lane-based friendly/enemy + selector semantics used everywhere (§3 `ITriggerCondition`/`ITargetSelector`). Consequences, all derived (no new machinery — recalc already zeroes/rewrites the `aura*` fields on **every** minion including the neutral lane, §4 ⑥): a **player's** friendly-scoped aura ("your other minions +1/+1") excludes the neutral lane (a player's `friendly` is its own board); a **neutral** minion's friendly-scoped aura buffs its **lane-mates** (its `friendly` is the neutral lane); reaching the lane from a player aura requires an explicit `AllNeutralMinions`/`AllMinions` selector in `Calculate`; **adjacency** auras (`AdjacentTo`) are per-lane, since each side is its own ordered array with no cross-lane adjacency.
+
 ### `ICardHandler`
 
 Top-level extensibility point. Cards with non-trivial behaviour have a `handlerKey` in their definition that maps to an `ICardHandler` implementation. Cards without custom logic use `DefaultCardHandler`, which reads the `definition` JSON and dispatches to standard `IEffect` implementations.
@@ -771,10 +790,9 @@ interface IRandom {
 
 | Concern | Owner |
 |---|---|
-| Trigger fire order | `IEventBus` — current player first, then opponent; within each, sorted by current board index at publish time |
+| **Canonical board order** (one rule, two consumers) | Active player's `board[0..n]` by index → opponent's `board[0..n]` by index → **neutral zone by index**. Used identically for **trigger fire order** (`IEventBus`, snapshot at *publish* time) and **death/deathrattle/reborn sort** (`DeathResolutionService`, snapshot at *collect* time). Board index primary; `summonOrder` is the disambiguation fallback. Heroes are not `board[]` members and enter sequencing only via `ITargetSelector` per its own definition. Neutral minions take part in board-wide *event* triggers (last) but **not** turn-scoped Start/End-of-Turn triggers (no turn of their own) — see §3 `IEventBus`. |
 | Event visibility (new subscribers) | `IEventBus` — snapshot at publish + `birthEpoch < originEpoch` creation-epoch filter; a listener never receives events from the action that created it |
 | Death wave phases | `DeathResolutionService` — Phase 1 (remove) → Phase 2 (deathrattles) → Phase 3 (reborns) |
-| Death sort order | `DeathResolutionService` — current player board[0..n] by index, opponent board[0..n] by index, neutral zone by index |
 | Deathrattle before Reborn | `DeathResolutionService` — Phase 3 runs only after all Phase 2 actions complete |
 | New deaths during deathrattles | `DeathResolutionService` — deferred to next wave, not resolved mid-wave |
 | Resolution cadence | `GameEngine` — one action at a time; ①–⑥ run per action, draining the queue; ⑦ death + ⑧ win fire **only when the queue empties** (cascade settled), then loop. Deaths are batched at the settle point, never mid-cascade — so triggered reactions resolve before removals (amendment B) |
@@ -845,11 +863,11 @@ The registered handler for this action type is invoked. It mutates `GameState` a
 
 ### ⑤ Publish Events → `IEventBus`
 
-Events are published in the order returned by the handler. For each event, `IEventBus` snapshots the subscriber lists at publish time and fires them filtered by creation epoch (`birthEpoch < originEpoch`, see §3 `IEventBus`): current player's list first (sorted by current board index at publish time), then opponent's list (same). The epoch filter means a listener never receives an event from the action that created it. Subscribers enqueue new actions via `IActionQueue` — they do not process them inline.
+Events are published in the order returned by the handler. For each event, `IEventBus` snapshots the subscriber lists at publish time and fires them filtered by creation epoch (`birthEpoch < originEpoch`, see §3 `IEventBus`) in the canonical board order: current player's list first (sorted by current board index at publish time), then opponent's list, then the neutral zone's (each the same). The epoch filter means a listener never receives an event from the action that created it. Subscribers enqueue new actions via `IActionQueue` — they do not process them inline.
 
 ### ⑥ Aura Recalculation
 
-All registered `IAura.Calculate(state)` implementations are run. `auraAttackBonus` and `auraHealthBonus` on every minion are zeroed and fully rewritten. A minion newly at ≤0 `maxHealth` **enters pending-death** (publishing `MinionMortallyWoundedEvent`, cause = aura loss) — but it is **not removed here**; like a damage-killed minion it lingers, mortally wounded, until the next settle (⑦).
+All registered `IAura.Calculate(state)` implementations are run. `auraAttackBonus` and `auraHealthBonus` on every minion — **including the neutral lane** — are zeroed and fully rewritten (a neutral minion stays at 0 bonus unless some aura's `Calculate` selects it; see §3 `IAura` scope note). A minion newly at ≤0 `maxHealth` (an aura-loss death) **enters pending-death** (publishing `MinionMortallyWoundedEvent`) — but it is **not removed here**; like a damage-killed minion it lingers, mortally wounded, until the next settle (⑦).
 
 Recalculation runs **per action** (⑥, while draining) — after any action that changes board composition, minion stats, or keywords — and also after each action processed in Phase 2 of the death wave and after Phase 3 reborn summons. Keeping aura recalc per-action (cheaper than deferring it) means mid-cascade reactions always read fresh stats; only *death* is deferred to the settle, not aura math.
 
@@ -919,7 +937,7 @@ Post-reaction windows are **not** opened here at the settle; they open **per act
 The `EndTurnAction` handler and subsequent system actions implement the full turn transition:
 
 1. Publish `TurnEndedEvent`
-2. Fire End-of-Turn triggers (current player L→R, then opponent L→R)
+2. Fire End-of-Turn triggers (current player L→R, then opponent L→R) — **neutral minions are intentionally excluded** (turn-scoped; a neutral minion has no turn of its own — see §3 `IEventBus`)
 3. **Unfreeze sweep — for the player whose turn is ENDING** (before the swap, so the freeze actually costs an attack rather than thawing at the start of the controller's turn): thaw each frozen character they control **unless** it was frozen *this* turn while exhausted — i.e. keep frozen iff `frozenOnTurn == turn.number && attacksUsedThisTurn >= budget` (the same exhaustion test as `AttackerExhausted`, §4 ③); otherwise set `isFrozen = false`, clear `frozenOnTurn`, emit `MinionThawedEvent`. This makes Freeze cost exactly one attack (a character frozen after swinging stays frozen through its next turn; one frozen on the opponent's turn, or this turn before swinging, thaws at the end of the turn it was unable to act).
 4. **Mana refresh — for the player whose turn is ENDING** (moved from turn-start to turn-**end**, 2026-06-09): increment *their* `maxMana` (cap 10) and restore *their* `mana` to `maxMana`. Refreshing here pre-loads the full pool the player then carries **through the opponent's turn**, so an off-turn **intervention** spends straight from `mana` (the ordinary `effectiveCost ≤ mana` check) and the player's own next turn simply begins with whatever interventions didn't consume — **no `reservedMana` field, no separate ceiling**; the affordability ceiling is naturally their *full ramped* next-turn pool. (The game's first turn has no preceding turn-end, so game setup seeds each player's turn-1 `mana`/`maxMana` directly. A future overload-style "less mana next turn" effect would apply its reduction here.)
 5. Swap active player
@@ -927,7 +945,7 @@ The `EndTurnAction` handler and subsequent system actions implement the full tur
 7. Reset `heroPowerUsedThisTurn`, `cardsPlayedThisTurn`
 8. Enqueue `DrawCardAction`
 9. Publish `TurnStartedEvent`
-10. Fire Start-of-Turn triggers (new active player L→R, then opponent L→R)
+10. Fire Start-of-Turn triggers (new active player L→R, then opponent L→R) — neutral minions excluded (turn-scoped; step 2)
 11. Start turn timer
 
 Each of these produces actions that go through the full pipeline.

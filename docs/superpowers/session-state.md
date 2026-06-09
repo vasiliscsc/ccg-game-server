@@ -97,7 +97,7 @@ Open Q/A sweep for spec holes (distinct from the 13-item borrow list and the Fir
 
 **Hole #4 (freeze half) — DECIDED + APPLIED (2026-06-08):** found TWO bugs — the lifecycle unfroze *after* the swap (start of controller's turn → negated Freeze), and my hole-#1 note had the thaw condition inverted. Fixed with the HS "Freeze costs exactly one attack" rule: new `MinionOnBoard.frozenOnTurn` (stamped by `FreezeTargetAction`); unfreeze sweep **moved to end of the ending player's turn, pre-swap** (Turn Lifecycle step 3); thaw unless `frozenOnTurn == turn.number && exhausted`; new `MinionThawedEvent`. Water-Elemental case verified. **Hero freeze deferred** (recorded in Unaddressed Features — needs `PlayerState` fields + hero events + ③ wiring, belongs with hero-combat pass). **Hole #4 now fully closed** (Stealth half via #1, Freeze half here). Full record in borrow-list note "Hole #4 (freeze half)".
 
-**Still-open holes** (#1, #3+follow-on, #4 done): **#2** fatigue not in the data model (no counter on `PlayerState`, no action/event, yet `HeroMortallyWoundedEvent` lists `fatigue` as a cause). **Recorded deferrals:** temporary control; `!bornNeutral`-dies-in-neutral routing; hero freeze. Resume by picking #2, a deferral, or continuing the open Q/A.
+**Still-open holes** (#1, #3+follow-on, #4 done): **#2** fatigue not in the data model (no counter on `PlayerState`, no action/event, yet `HeroMortallyWoundedEvent` lists `fatigue` as a cause). *(Closed in session 7, 2026-06-09 — see below.)* **Recorded deferrals:** temporary control; `!bornNeutral`-dies-in-neutral routing; hero freeze. Resume by picking #2, a deferral, or continuing the open Q/A.
 
 ### Session 6 (2026-06-09): intervention multi-card resolution — MTG-style re-declare/re-offer loop (DECIDED + APPLIED)
 
@@ -113,6 +113,29 @@ Continued the open Q/A hole-hunting, **revisiting point D (interventions)**. The
 **Spec edits APPLIED** across §1 (`PendingIntervention.candidateCardIds`; no `reservedMana`), §2 (`SubmitInterventionAction`/`StartInterventionAction`), §3 (pillar-2 pre/post, ordering-table Interception + Post-reaction rows, hand-zone row), §4 (③′ re-declare loop + depth-1-nesting reword, ⑥′ re-offer loop, Response-resolution loop continuation, PendingIntervention Interruption full rewrite incl. Batching's two granularities, **Turn Lifecycle mana refresh moved to step 4 / turn-end**). Re-grepped clean (no stale `single-response` / `declared once` / `not re-published` / `one window per matched card` / `reservedMana`; the two remaining matches are the intentional supersede note and the combat-atomicity rationale).
 
 **Session-6 follow-up (same day): secret-vs-intervention worked example → two refinements.** User probed: A holds an active **secret** "before the hero takes damage, add 8 armor"; B holds an intervention "when a friendly minion takes damage, deal that much to the enemy hero"; A attacks B's minion. Resolution: B's ⑥′ reflect resolves immediately (ahead of the queued retaliation); the reflect's ③′ triggers **A's secret inline** (autos are **not** capped by depth-1 — only *player windows* are), so armor absorbs the hit. **(a) Depth-1 wording tightened** in 4 spots — "a response cannot itself be intervened" over-claimed (an auto/secret *can* intercept a response's sub-action); now scoped to "no further *player window*; auto/secret hosts still fire — and may intercept — inline." **(b) Hero armor logged as a gap:** `armor` is **not** in `PlayerState` (only an interception *example* in §3); added an Unaddressed-Features "Hero armor" entry (needs `PlayerState.armor` + `GainArmorAction` + ④ precedence slot) deferred to the **hero-combat pass** — the consume-armor mechanics already resolve once the field exists.
+
+### Session 7 (2026-06-09): hole #2 — fatigue (DECIDED + APPLIED)
+
+Closed the **last open hole from the menu**. The empty-deck draw was unspecified and `HeroMortallyWoundedEvent` carried a dangling `fatigue` cause. Full record + Plan impact in the borrow-list note's **"Hole #2"**.
+
+- **Model (HS-exact):** `PlayerState.fatigueCounter: int` (init 0, never resets); empty-deck draw does `++` then deals the new value (1,2,3,…). **Routed through `DealDamageAction`** (forced by the locked all-damage-through-one-channel rule) → inherits ④ precedence (future hero-armor slot), interception/⑥′ windows, and the hero→`HeroMortallyWoundedEvent`→⑧ settle path (deck-out loss + mutual-deckout draw free). `sourceId = null` (sourceless).
+- **`DrawCardAction` handler** spelled out, three branches (draw / overflow-burn / fatigue). New **`FatigueDamageEvent { playerId, amount }`** (fires before the damage lands).
+- **The real fork — `cause` discriminator: DROPPED (user's call, YAGNI).** It sat on both mortally-wounded events but nothing populated it and no card branches on it. Removed from `HeroMortallyWoundedEvent` → `{playerId, sourceId}` and `MinionMortallyWoundedEvent` → `{minionId, sourceId}`; fatigue is identified by its preceding `FatigueDamageEvent`. Also reworded §6 ⑥ ("cause = aura loss" → "an aura-loss death"), the one place a cause value was written. Rejected the full `DamageCause` taxonomy (real hot-path surface for an informational field).
+- **Same-pass cleanup:** fixed stale §2B `ActionDeclaredEvent` text ("fires once / not re-declared") that contradicted the session-6 re-declare loop — a session-6 grep miss. Doc consistency only.
+
+**Spec edits APPLIED** across §1 (`fatigueCounter`), §2A (`DrawCardAction` handler), §2B (`FatigueDamageEvent`; `cause` removed ×2; `ActionDeclaredEvent` reworded), §6 ⑥ (aura-loss reword). Re-grepped: no `cause =` field-writes remain; no "fires once"/"not re-declared".
+
+**Open holes: NONE remain from the hole-hunting menu** (#1, #2, #3+follow-on, #4 all done). **Recorded deferrals unchanged:** temporary control; `!bornNeutral`-dies-in-neutral routing; hero freeze; hero armor; hero-combat pass; the 0-cost-intervention-loop residual.
+
+**Then started the QUEUED TOPICS. Queued topic #1 — trigger-order = deathrattle-order — RESOLVED + APPLIED (2026-06-09, session 7).** The hole was real: `IEventBus` kept only two subscriber lists (current player, opponent) and never mentioned neutral, while death sort ended in neutral — and the selector row already assumed a unified order the trigger side didn't state. Unified into **one canonical board order** (active `board[0..n]` → opponent `board[0..n]` → neutral by index), used identically by trigger dispatch (snapshot at publish), death/deathrattle/reborn sort (snapshot at collect), and selectors; `summonOrder` the fallback; heroes only via selectors. Pinned **neutral's slot last** on the trigger side (`IEventBus` → three dispatch groups); **de-duplicated** the two Ordering-table rows into one. **Design call:** neutral fires **board-wide event** triggers (last) but **not turn-scoped** Start/End-of-Turn (no turn of its own — falls out of controller-scoped condition semantics; Turn Lifecycle steps 2/10 now state the exclusion). Spec edits: §3 `IEventBus` (three groups + the event-vs-turn-scoped distinction) + `ITargetSelector` cross-ref; §4 ⑤ Publish + Turn Lifecycle 2/10; Deterministic-Ordering table merged row. Full record + Plan impact in the borrow-list note's "Queued topics" #1.
+
+**Queued topic #2 — neutral-lane auras → generalized to a LANE-BASED friendly/enemy model — RESOLVED + APPLIED (2026-06-09, session 7).** Began as "do neutral minions emit auras"; the user's probe ("a neutral minion's friendlies are its lane-mates") surfaced that the real question was the **central** `friendly`/`enemy` definition shared by auras, triggers, AND selectors — which was controller-based and left neutral empty. **North-star (user): the neutral lane should behave as close to a regular lane as possible so mechanics work out of the box.** Landed: (a) **lane-based friendly/enemy, formalized by the user** — `friendly(h,e) ⟺ h.ownerId==e.ownerId` (null==null → neutral host's friendlies = lane-mates); `enemy(h,e) ⟺ h.ownerId!=e.ownerId && e.ownerId!=null` (the `!=null` clause makes a neutral minion never anyone's *enemy*; player host's enemy excludes neutral = the 3rd category, neutral host's enemy = both boards; player-host case is HS-identical). (b) **Auras fall out** — player friendly aura excludes neutral, neutral's friendly aura buffs lane-mates, reaching the lane from a player aura needs an explicit `AllNeutralMinions`/`AllMinions` selector, `AdjacentTo` per-lane, no hardcoded wall. (c) **Triggers inherit it** — neutral `FriendlyOnly` fires off lane-mates; **corrected my topic-#1 overstatement** (only turn/hero-context conditions — Start/End-of-Turn, Inspire, Combo — stay empty for neutral; the friendly *relation* resolves). (d) **Summon-event consolidation** — neutral spawn now emits the regular **`MinionSummonedEvent` with `ownerId==null`** via the same board-entry routine; **removed `NeutralMinionSpawnedEvent`** (it was the bug); `NeutralZoneRepopulatedEvent` demoted to a renderer-only batch marker. Spec edits: §1 (neutralZone comment), §2A (`SpawnNeutralMinionAction`), §2B (`MinionSummonedEvent` strengthened, `NeutralMinionSpawnedEvent` removed, `NeutralZoneRepopulatedEvent` reframed), §3 (`ITriggerCondition` formal predicates + `FriendlyOnly`/`EnemyOnly` rows, `ITargetSelector`, `IAura` scope note, `IEventBus` topic-#1 note corrected), §4 ⑥ (every minion incl. neutral). Re-grepped: no stale controller-based phrasing, no `player auras do not apply`, no live `NeutralMinionSpawnedEvent`. Full record + Plan impact in the borrow-list note's "Queued topics" #2.
+
+**Remaining queued topics: #3 debug text format, #4 intervention visibility.**
+
+**▶ RESUME OPTIONS (user drives one):** (a) continue the **queued topics** (#2 neutral-lane auras — natural next, now that ordering is pinned; #3 debug text format; #4 intervention visibility) or call hole-hunting **done**; (b) a **recorded deferral** / the **hero-combat pass** (bundles hero freeze + hero armor + heroAttack/weapon/durability); (c) the **end-of-pass plan reconciliation** → implementation at **Epic 01 / T1.1**.
+
+**Uncommitted:** session-7 spec edits + this state + the borrow-list note are in the working tree (not yet committed — the earlier session-state mirror sync is also uncommitted per the user's "leave it for now").
 
 ### ⏹ SESSION STOP (2026-06-09, end of session 6)
 
@@ -279,15 +302,18 @@ When an opponent declares an action, the other player gets a **single-response w
 
 ---
 
-## Approved data model (Section 1 — approved)
+## Approved data model (Section 1)
+
+> **Provenance (synced 2026-06-09):** this block is a convenience mirror of spec §1 (`specs/2026-05-26-game-mechanics.md`). The **spec is authoritative** — on any conflict, the spec wins. Re-synced through end of session 6 (`a9cdb97`): field renames `cardId`→`definitionKey`, `canAttack`→`summoningSick`, dropped `attacksAllowedThisTurn`; added neutral-zone/origin/3-field tribe+keyword/freeze/reborn fields; `GraveyardEntry.originalCard` removed; `PendingIntervention` set-valued; turn-end mana refresh; **session 7** added `PlayerState.fatigueCounter` + dropped `cause` from the two mortally-wounded events. Comments trimmed vs. spec; read the spec for full rationale.
 
 ### GameState
 ```
 sessionId: string
 player1: PlayerState
 player2: PlayerState
-neutralZone: MinionOnBoard[]          // ownerId = null; Taunt ignored; auras don't apply
+neutralZone: MinionOnBoard[]          // ownerId = null; Taunt is per-LANE (neutral Taunt forces attacks INTO the neutral lane only); player auras don't apply
 neutralZoneConfig: NeutralZoneConfig? // null = no neutral zone this game mode
+neutralGraveyard: GraveyardEntry[]    // shared, owned by GameState (not per-player); a dead minion lands here iff bornNeutral && ownerId==null at death (§4 ⑦ routing)
 turn: TurnState
 timer: TimerState
 phase: GamePhase                      // Mulligan | WaitingForPlayers | InProgress | PendingChoice | PendingIntervention | Ended
@@ -295,6 +321,8 @@ winnerId?: string
 pendingChoice?: PendingChoice
 pendingIntervention?: PendingIntervention
 mulliganState?: MulliganState
+rngSeed: ulong                        // fixed at match creation; drives ALL randomness via IRandom; server-side, never sent to client
+currentActionEpoch: int               // monotonic; ++ per action at stage ④; event-visibility filter + per-action RNG derivation
 ```
 
 ### NeutralZoneConfig
@@ -316,37 +344,56 @@ weapon?: WeaponOnHero
 heroPower: HeroPower
 heroPowerUsedThisTurn: bool
 cardsPlayedThisTurn: int      // Combo tracking
+fatigueCounter: int           // empty-deck-draw counter; init 0, never resets; ++ then deal the new value to this hero (1,2,3,…) — §2A DrawCardAction
 ```
 
 ### MinionOnBoard
 ```
-minionId, cardId: string
-ownerId: string?              // null = neutral zone
+minionId: string
+definitionKey: string         // SOLE link into card-def library + ICardHandler; NOT a Card.id (playing a card never transfers its id; tokens have definitionKey but no Card.id)
+ownerId: string?              // null = neutral zone. TakeControlAction sets a player (re-homes onto their board; then dies to their graveyard)
+bornNeutral: bool             // immutable ORIGIN flag: true iff system-spawned neutral (SpawnNeutralMinionAction); survives a control change; with ownerId, sole input to §4 ⑦ graveyard routing
 baseAttack, baseHealth: int   // immutable, from card definition
-enchantments: StatModifier[]  // permanent buffs — Silence clears
-auraAttackBonus, auraHealthBonus: int  // recalculated, never in enchantments
+enchantments: StatModifier[]  // permanent buffs; Silence clears all
+auraAttackBonus, auraHealthBonus: int  // recalculated each aura pass; never in enchantments
 attack: int                   // = baseAttack + Σenchantments.attackDelta + auraAttackBonus
 maxHealth: int                // = baseHealth + Σenchantments.healthDelta + auraHealthBonus
-currentHealth: int            // takes damage; healed up to maxHealth
-keywords: string[]            // resolved to IKeyword at runtime; Silence clears
+currentHealth: int            // takes damage; healed up to maxHealth. ≤0 (or destroy-marked) ⇒ "mortally wounded": stays ON board (targetable/countable/keyword-active) until next death-wave settle (§4 ⑦)
+keywords: string[]            // EFFECTIVE view = intrinsic ∪ granted ∪ aura; what the engine queries (resolved to IKeyword at runtime)
+intrinsicKeywords: string[]   // from card def at summon; Silence clears
+grantedKeywords: string[]     // permanent non-aura grants; retained across RetainEnchantments bounce; Silence clears
+auraKeywords: string[]        // aura-granted, recomputed each pass; never persisted; ANY keyword may be aura-granted (pulled, never a bus subscription)
+intrinsicTribes: Tribe        // from card at summon; immutable; survives Silence
+grantedTribes: Tribe          // permanent tribe grants; Silence clears to Tribe.None
+auraTribes: Tribe             // recomputed each aura pass; never persisted
+effectiveTribes: Tribe        // = intrinsicTribes | grantedTribes | auraTribes; all engine tribe checks use this
 isInverted: bool
-canAttack: bool
-attacksUsedThisTurn: int      // Windfury allows 2
-isFrozen, isDamaged: bool
+summoningSick: bool           // raw fact (replaced derived `canAttack`): entered a board this turn, not yet woken. Set by BOTH summon and control; cleared by turn-start sweep. Attack eligibility (incl. Charge-any / Rush-minions-only) PULLED from effective keywords at §4 ③
+attacksUsedThisTurn: int      // raw counter; reset at turn-start. ONLY stored attack-state — per-turn BUDGET is PULLED at §4 ③ (Windfury→2 else 1), never a field (can't desync from keyword). Not consulted for a commanded neutral
+summonOrder: int              // monotonic per session; trigger fire-order disambiguation
+isFrozen: bool                // frozen → cannot attack (§4 ③ AttackerFrozen)
+frozenOnTurn: int             // turn.number when freeze landed; drives end-of-turn thaw rule (Turn Lifecycle step 3)
+isDamaged: bool
+rebornAvailable: bool         // one-time Reborn charge (distinct from the persistent "reborn" keyword tag); init at summon to keywords.Contains("reborn"); reborn-summon path is false; consuming THIS (not the keyword) is what reborn does (§4 ⑦)
+// TRIGGERS: not fields. ITrigger(s)/Deathrattle/keyword-hooks registered into IEventBus by ICardHandler (via definitionKey) at summon (④), dropped on leave. Bus carries only ITrigger; keywords are pulled from the effective view
 ```
 
 ### Card
 ```
 id, name: string
+definitionKey: string         // only cross-entity link into card-def library; distinct from per-instance `id`
 type: CardType                // Minion | Spell | Weapon | HeroPower
 rarity: CardRarity
+tribes: Tribe                 // [Flags] intrinsic taxonomy from definition; Tribe.None = tribeless (valid); NOT cleared by Silence
 baseManaCost: int
 baseAttack?, baseHealth?: int // Minion / Weapon only
 modifiers: StatModifier[]     // in-hand cost/stat changes; attack/healthDelta migrate to enchantments on play
+grantedKeywords: string[]     // carried from a RetainEnchantments bounce/shuffle; migrate to the new minion's grantedKeywords on play; not part of base definition
 effectiveCost: int            // max(0, baseManaCost + Σmodifiers.costDelta)
 definition: JsonElement       // has "normal" and "inverted" sections
 handlerKey?: string
-isInverted: bool
+isInverted: bool              // intrinsic state; preserved across all minion↔card transitions
+// REACTIVE TRIGGERS: in a trigger-hosting zone, ICardHandler registers reactive ITrigger(s), live by zone, dropped on play/discard/return — HAND → player-choice intervention; SECRET zone → auto-resolve. (Most cards have none.)
 ```
 
 ### StatModifier (unified — used on both Card and MinionOnBoard)
@@ -360,29 +407,39 @@ healthDelta: int
 ### GraveyardEntry hierarchy
 ```
 GraveyardEntry (abstract)
-  originalCard: Card
   turnPlayed: int
+  // NO stored Card. Card form is FABRICATED on demand (§1 Fabrication rule) at point of use — minting a fresh
+  // Card.id as a stage-④ action. A pre-stored originalCard would be derived data that can only drift. Each
+  // subtype keeps its own ENTITY snapshot, the single source of truth the fabrication reads.
 
 GraveyardMinion : GraveyardEntry
-  snapshot: MinionOnBoard   // full state at death
+  snapshot: MinionOnBoard   // full death state; carries definitionKey + isInverted → card fully derivable
   diedOnTurn: int
 
 GraveyardSpell : GraveyardEntry
-  // base fields sufficient
+  definitionKey: string     // a spell has no board snapshot → stores its own identity
+  isInverted: bool          // → card fabricated from these on recast
 
 GraveyardWeapon : GraveyardEntry
-  weaponState: WeaponOnHero
+  weaponState: WeaponOnHero // carries definitionKey → card derivable
   destroyedOnTurn: int
 ```
 
 ### Supporting types
 ```
-WeaponOnHero    — cardId: string, attack: int, durability: int
-HeroPower       — cardId: string, manaCost: int, definition: JsonElement, handlerKey?: string
-TurnState       — activePlayerId: string, number: int
-TimerState      — secondsRemaining: int
-PendingChoice   — waitingPlayerId: string, choiceType: ChoiceType, options: ChoiceOption[], context: JsonElement
-PendingIntervention — respondingPlayerId: string, heldAction: GameAction, timeoutSeconds: int
+WeaponOnHero        — definitionKey: string, attack: int, durability: int
+HeroPower           — definitionKey: string, manaCost: int, definition: JsonElement, handlerKey?: string
+TurnState           — activePlayerId: string, number: int
+TimerState          — secondsRemaining: int
+PendingChoice       — waitingPlayerId: string, choiceType: ChoiceType, options: ChoiceOption[], context: JsonElement
+PendingIntervention — respondingPlayerId: string, heldAction: GameAction?, candidateCardIds: string[], timeoutSeconds: int
+                      // SET-VALUED window (2026-06-09): candidateCardIds = responder's matching + affordable reactive
+                      // hand cards. Player plays ONE (card + targets) or skips. heldAction null = post-reaction
+                      // (re-offer loop); non-null = declaration-hold (re-declare loop). Re-opens after each PLAY, never after a skip.
+MulliganState       — player1Completed: bool, player2Completed: bool
+EffectContext       — sourceId: string, sourcePlayerId: string, targetId: string?, state: GameState (read-only), SpellDamageBonus: int
+                      // BASE resolution context (IEffect.Execute / ITargetSelector.Select / keyword pulls). sourceId = unified entity ref (minion OR card), set by the enqueuer from the action's source fields
+CardPlayContext : EffectContext — + card: Card   // SUPERSET for ICardHandler.OnPlay only (adds the resolved Card; card.id == sourceId)
 ```
 
 ---
