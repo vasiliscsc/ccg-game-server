@@ -149,7 +149,9 @@ Closed the **last open hole from the menu**. The empty-deck draw was unspecified
 
 **Spec edits APPLIED:** §3 — new **"Debug Trace (`ITraceSink`)"** subsection (after `IRandom`, before Deterministic Ordering): interface, emission model, record-vocabulary table, JSONL worked example, conventions, non-goals. §4 — intro cross-ref (emission points); `StabilizationAbortReport` note (attached sink = strictly richer repro view). No data-model change; no new events.
 
-**Remaining queued topics: #4 intervention visibility.**
+**Queued topic #4 — intervention visibility (responder's-eye view) — RESOLVED + APPLIED (2026-06-10, session 8).** Opened with a **user-requested prior-art survey** (MTG/YGO/LoR/FaB with responder windows vs HS/Gwent/Snap without): (1) **cause visibility is unanimous** — every game with a responder window shows the pending object in full (hidden identity exists only on pre-armed face-down cards, protecting the *responder's* card, never the actor's pending action); (2) the real split is **structural** windows (MTG paper/LoR — leak-free, slow) vs **contingent** (Arena auto-pass/Master Duel — fast, pause = tell). User locked: **③′ cause = held action verbatim** (per the unanimity, "what the players expect") and **contingent + thin public event** (tell accepted; masking = server/UX option). Landed as **one information ceiling** — a prompt shows exactly the responder's own candidates + the cause, which is public-by-nature (③′ pre-resolution params) or already on their wire (⑥′ → `causeEventIds[]` refs, never re-embedded — an opponent-draw trigger can't expose the card). **Wire:** directed/public split formalized (§2B "Directed events", mulligan precedent): directed `InterventionPromptEvent` (cause + candidates + timeout) / public thin `InterventionWindowOpenedEvent`; **adjacent fix** — `ChoiceStartedEvent` was broadcasting `options[]` (Discover leak) → thinned to `optionCount` + new directed `ChoicePromptEvent`. **Data model:** `candidateCardIds` → **`candidates: InterventionCandidate[] {cardId, targetIds[]}`** (engine-computed targets; single source for ③-validation + the prompt; mirror block re-synced); new **`eventId: long`** on all events (global append-order ref). Armed-state telegraph + secret identity/cost/mark-scope stay deferred. Spec edits: §1, §2A (`StartInterventionAction` enriched, `SubmitInterventionAction` validation), §2B (preamble + directed paragraph + 5 event rows), §3 (visibility block + deferred-list reword), §4 (③′/⑥′/Interruption). Re-grepped: no stale `candidateCardIds`. Full record + Plan impact: borrow-list note "Queued topics" #4.
+
+**Queued topics: ALL FOUR RESOLVED (#1–#4). The hole-hunting/probing pass is fully drained — remaining pre-implementation menu: recorded deferrals / hero-combat pass, or the end-of-pass plan reconciliation.**
 
 ### ⏹ SESSION STOP (2026-06-09, end of session 7)
 
@@ -463,10 +465,12 @@ HeroPower           — definitionKey: string, manaCost: int, definition: JsonEl
 TurnState           — activePlayerId: string, number: int
 TimerState          — secondsRemaining: int
 PendingChoice       — waitingPlayerId: string, choiceType: ChoiceType, options: ChoiceOption[], context: JsonElement
-PendingIntervention — respondingPlayerId: string, heldAction: GameAction?, candidateCardIds: string[], timeoutSeconds: int
-                      // SET-VALUED window (2026-06-09): candidateCardIds = responder's matching + affordable reactive
+PendingIntervention — respondingPlayerId: string, heldAction: GameAction?, candidates: InterventionCandidate[], timeoutSeconds: int
+                      // SET-VALUED window (2026-06-09): candidates = responder's matching + affordable reactive
                       // hand cards. Player plays ONE (card + targets) or skips. heldAction null = post-reaction
                       // (re-offer loop); non-null = declaration-hold (re-declare loop). Re-opens after each PLAY, never after a skip.
+InterventionCandidate — cardId: string, targetIds: string[]   // offered card + engine-computed legal targets (2026-06-10);
+                      // single source for submit-validation AND the responder-directed InterventionPromptEvent
 MulliganState       — player1Completed: bool, player2Completed: bool
 EffectContext       — sourceId: string, sourcePlayerId: string, targetId: string?, state: GameState (read-only), SpellDamageBonus: int
                       // BASE resolution context (IEffect.Execute / ITargetSelector.Select / keyword pulls). sourceId = unified entity ref (minion OR card), set by the enqueuer from the action's source fields
