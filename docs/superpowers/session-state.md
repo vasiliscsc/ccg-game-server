@@ -151,7 +151,9 @@ Closed the **last open hole from the menu**. The empty-deck draw was unspecified
 
 **Queued topic #4 — intervention visibility (responder's-eye view) — RESOLVED + APPLIED (2026-06-10, session 8).** Opened with a **user-requested prior-art survey** (MTG/YGO/LoR/FaB with responder windows vs HS/Gwent/Snap without): (1) **cause visibility is unanimous** — every game with a responder window shows the pending object in full (hidden identity exists only on pre-armed face-down cards, protecting the *responder's* card, never the actor's pending action); (2) the real split is **structural** windows (MTG paper/LoR — leak-free, slow) vs **contingent** (Arena auto-pass/Master Duel — fast, pause = tell). User locked: **③′ cause = held action verbatim** (per the unanimity, "what the players expect") and **contingent + thin public event** (tell accepted; masking = server/UX option). Landed as **one information ceiling** — a prompt shows exactly the responder's own candidates + the cause, which is public-by-nature (③′ pre-resolution params) or already on their wire (⑥′ → `causeEventIds[]` refs, never re-embedded — an opponent-draw trigger can't expose the card). **Wire:** directed/public split formalized (§2B "Directed events", mulligan precedent): directed `InterventionPromptEvent` (cause + candidates + timeout) / public thin `InterventionWindowOpenedEvent`; **adjacent fix** — `ChoiceStartedEvent` was broadcasting `options[]` (Discover leak) → thinned to `optionCount` + new directed `ChoicePromptEvent`. **Data model:** `candidateCardIds` → **`candidates: InterventionCandidate[] {cardId, targetIds[]}`** (engine-computed targets; single source for ③-validation + the prompt; mirror block re-synced); new **`eventId: long`** on all events (global append-order ref). Armed-state telegraph + secret identity/cost/mark-scope stay deferred. Spec edits: §1, §2A (`StartInterventionAction` enriched, `SubmitInterventionAction` validation), §2B (preamble + directed paragraph + 5 event rows), §3 (visibility block + deferred-list reword), §4 (③′/⑥′/Interruption). Re-grepped: no stale `candidateCardIds`. Full record + Plan impact: borrow-list note "Queued topics" #4.
 
-**Queued topics: ALL FOUR RESOLVED (#1–#4). The hole-hunting/probing pass is fully drained — remaining pre-implementation menu: recorded deferrals / hero-combat pass, or the end-of-pass plan reconciliation.**
+**Queued topics: ALL FOUR RESOLVED (#1–#4). The hole-hunting/probing pass is fully drained.**
+
+**Session 8 part 2 (ran past midnight → 2026-06-11): HERO-COMBAT PASS started — and mid-pass the user pivoted the hero kit: ARTIFACTS replace the hero-power system (DECIDED + APPLIED).** First lock of the pass proper: **hero defenders never retaliate** (HS-faithful). Then, at the `heroAttack` question, the user introduced a stakeholder-driven spec change: no unique hero powers — a new **Artifact** system (per-player row, cap 3 incl. a shared **starter** "pay mana, draw" with escalating per-turn cost; passive = triggers/auras, active = cost+target+effects, or both; ONE durability counter with definition-declared consumers; generic `charges`; in-turn free discard; reject-at-③ on full row). Full hero-power demolition: `heroPower`/`heroPowerUsedThisTurn`/`HeroPower` type/`UseHeroPowerAction`/`HeroPowerUsedEvent`/`InspireTriggeredEvent` all removed; CardType gains `Artifact`; Inspire → **`OnArtifactActivated`**. Trigger ordering: artifacts append **inside their owner's dispatch group after that owner's minions** (slot order) — preserves active-first, no fourth global group. Discard vs destroy = **disjoint event types** (the session-7 no-`cause`-enum idiom). §1 mirror blocks re-synced (PlayerState, ArtifactOnBoard, GraveyardArtifact, CardType, locked-scope card-types + trigger list). Full record + Plan impact: borrow-list note **"Hero-combat pass" Part 1**. **Pass still open: heroAttack semantics, weapon wiring, hero armor, hero freeze.**
 
 ### ⏹ SESSION STOP (2026-06-09, end of session 7)
 
@@ -289,13 +291,13 @@ Items, ordered by impact (✅ = resolved this pass):
 ## Decided feature scope (locked in brainstorming)
 
 ### Card types
-All four: **Minion, Spell, Weapon, Hero Power**. Hero/class is tied to the deck (like Hearthstone).
+**Minion, Spell, Weapon, Artifact**. Hero/class is tied to the deck (like Hearthstone). *(Revised 2026-06-11: the original fourth type, Hero Power, was replaced by the **Artifact** system — stakeholder/playtest feedback; see session 8 part 2 + spec §1 `ArtifactOnBoard`.)*
 
 ### Keywords (all selected, system must be extensible)
 Taunt, Divine Shield, Charge, Rush, Lifesteal, Windfury, Poisonous, Stealth, Spell Damage +X, Reborn, Enrage, Freeze — plus any future keywords added via new `IKeyword` implementations.
 
 ### Trigger types (all selected, system must be extensible)
-Battlecry, Deathrattle, Start of Turn, End of Turn, Aura (continuous), On Damage Taken, On Friendly Minion Death, On Spell Cast, Inspire, Combo, On Invert — plus any future triggers added via new `ITrigger` implementations.
+Battlecry, Deathrattle, Start of Turn, End of Turn, Aura (continuous), On Damage Taken, On Friendly Minion Death, On Spell Cast, On Artifact Activated (renamed from Inspire, 2026-06-11), Combo, On Invert — plus any future triggers added via new `ITrigger` implementations.
 
 ### Inversion mechanic
 - A card or minion can be in **Normal** or **Inverted** state
@@ -374,8 +376,7 @@ deck: Card[]
 board: MinionOnBoard[]        // player's own side only
 graveyard: GraveyardEntry[]   // unified — minions + spells + weapons
 weapon?: WeaponOnHero
-heroPower: HeroPower
-heroPowerUsedThisTurn: bool
+artifacts: ArtifactOnBoard[]  // artifact row, cap 3 incl. the starter (hero-power REPLACEMENT, 2026-06-11); heroPower/heroPowerUsedThisTurn REMOVED
 cardsPlayedThisTurn: int      // Combo tracking
 fatigueCounter: int           // empty-deck-draw counter; init 0, never resets; ++ then deal the new value to this hero (1,2,3,…) — §2A DrawCardAction
 ```
@@ -415,7 +416,7 @@ rebornAvailable: bool         // one-time Reborn charge (distinct from the persi
 ```
 id, name: string
 definitionKey: string         // only cross-entity link into card-def library; distinct from per-instance `id`
-type: CardType                // Minion | Spell | Weapon | HeroPower
+type: CardType                // Minion | Spell | Weapon | Artifact   (Artifact replaced HeroPower, 2026-06-11)
 rarity: CardRarity
 tribes: Tribe                 // [Flags] intrinsic taxonomy from definition; Tribe.None = tribeless (valid); NOT cleared by Silence
 baseManaCost: int
@@ -456,12 +457,20 @@ GraveyardSpell : GraveyardEntry
 GraveyardWeapon : GraveyardEntry
   weaponState: WeaponOnHero // carries definitionKey → card derivable
   destroyedOnTurn: int
+
+GraveyardArtifact : GraveyardEntry
+  artifactState: ArtifactOnBoard // full snapshot; both DISCARD and DESTROY land here (2026-06-11)
+  destroyedOnTurn: int
 ```
 
 ### Supporting types
 ```
 WeaponOnHero        — definitionKey: string, attack: int, durability: int
-HeroPower           — definitionKey: string, manaCost: int, definition: JsonElement, handlerKey?: string
+ArtifactOnBoard     — artifactId, definitionKey, ownerId: string; baseActivationCost: int? (null = passive-only; effective cost PULLED
+                      from the definition's formula — starter = base + usesThisTurn); durability: int? (null = infinite; ONE counter,
+                      definition declares consuming moments: activation / trigger-fire / both); charges: int (generic accumulator,
+                      via ModifyArtifactChargesAction only); usesThisTurn: int (reset at controller's turn start); equippedOnTurn: int
+                      // no attack/health — never combat/death-wave entities, not Silence-able, not aura-receivers (may HOST auras)
 TurnState           — activePlayerId: string, number: int
 TimerState          — secondsRemaining: int
 PendingChoice       — waitingPlayerId: string, choiceType: ChoiceType, options: ChoiceOption[], context: JsonElement

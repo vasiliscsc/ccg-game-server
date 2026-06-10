@@ -46,8 +46,9 @@ deck: Card[]
 board: MinionOnBoard[]        // player's own side only; ordered left to right
 graveyard: GraveyardEntry[]   // unified — minions + spells + weapons
 weapon?: WeaponOnHero
-heroPower: HeroPower
-heroPowerUsedThisTurn: bool
+artifacts: ArtifactOnBoard[]  // the player's artifact row (own board section, NOT minions) — cap GameConstants.MaxArtifacts = 3
+                              // incl. the STARTER artifact equipped at match setup (one shared definitionKey for every hero —
+                              // the hero-power replacement, 2026-06-11). See ArtifactOnBoard.
 cardsPlayedThisTurn: int      // Combo tracking
 fatigueCounter: int           // empty-deck-draw counter; init 0, persists all game, NEVER resets. Each draw from an empty deck does fatigueCounter++ THEN deals the new value to this hero (1,2,3,…) — see §2A DrawCardAction
 ```
@@ -84,12 +85,37 @@ rebornAvailable: bool         // the one-time Reborn charge — distinct from th
 // TRIGGERS — not stored as fields. This minion's ITrigger(s), Deathrattle, and keyword-hooks are registered into IEventBus by its ICardHandler (resolved via definitionKey) at summon (OnSummon, ④) and dropped when it leaves the board. Live by virtue of the board zone (§3 "Reactive Triggers, Interventions & Interception"). The bus carries only ITrigger; keywords are pulled from the effective `keywords` view (§3 IKeyword), not subscribed.
 ```
 
+### ArtifactOnBoard
+
+Artifacts (2026-06-11) **replace the hero-power system** — there is no `heroPower`/`UseHeroPowerAction`. A new first-class entity in its own per-player board section: **passive** (hosts triggers — and may host an `IAura`), **active** (activate → effects, optional mana cost and target), or **both**.
+
+```
+artifactId: string            // new entity-ref space (debug-trace prefix `a`)
+definitionKey: string         // sole link to the definition + handler — registers triggers/auras on equip (zone-scoped,
+                              // §3 "Reactive Triggers"), supplies activation effects + target selector + the cost formula
+ownerId: string               // artifacts are always player-owned; there are no neutral artifacts
+baseActivationCost: int?      // null = passive-only (not activatable). The EFFECTIVE activation cost is PULLED per
+                              // activation from the definition's cost formula over (artifact, state) — default = base;
+                              // the starter overrides with base + usesThisTurn (escalating draw). Validation and client
+                              // preview read the same pull (§4 ③) — never a stored verdict.
+durability: int?              // null = infinite. ONE counter; the definition declares which moment(s) consume a point —
+                              // activation, trigger-fire, or both. Reaching 0 enqueues DestroyArtifactAction.
+charges: int                  // generic accumulator, init 0 — instance state for quest-counter designs (mutated only via
+                              // ModifyArtifactChargesAction → ArtifactChargesChangedEvent)
+usesThisTurn: int             // activations this turn; reset at the controller's turn start (Turn Lifecycle step 7);
+                              // feeds escalating-cost formulas. There is NO per-turn activation budget — cost and
+                              // durability are the only limiters.
+equippedOnTurn: int
+// NOT combat entities: no attack/health — never attackers/defenders, never death-wave members, not Silence-able,
+// not aura-RECEIVERS (nothing to buff). Removal = durability exhaustion, owner discard, or an explicit destroy effect.
+```
+
 ### Card
 
 ```
 id, name: string
 definitionKey: string         // the only cross-entity link into the card-definition library (Identity section); distinct from `id`, which is the per-instance allocator
-type: CardType                // Minion | Spell | Weapon | HeroPower
+type: CardType                // Minion | Spell | Weapon | Artifact   (Artifact replaced HeroPower, 2026-06-11)
 rarity: CardRarity
 tribes: Tribe                 // [Flags] intrinsic taxonomy from the definition; Tribe.None = tribeless (valid). Gameplay tag; NOT cleared by Silence. See "Tribes" below.
 baseManaCost: int
@@ -135,13 +161,16 @@ GraveyardSpell : GraveyardEntry
 GraveyardWeapon : GraveyardEntry
   weaponState: WeaponOnHero // carries definitionKey → card derivable
   destroyedOnTurn: int
+
+GraveyardArtifact : GraveyardEntry
+  artifactState: ArtifactOnBoard // full snapshot (carries definitionKey → card derivable); both DISCARD and DESTROY land here
+  destroyedOnTurn: int
 ```
 
 ### Supporting types
 
 ```
 WeaponOnHero        — definitionKey: string, attack: int, durability: int
-HeroPower           — definitionKey: string, manaCost: int, definition: JsonElement, handlerKey?: string
 TurnState           — activePlayerId: string, number: int
 TimerState          — secondsRemaining: int
 PendingChoice       — waitingPlayerId: string, choiceType: ChoiceType, options: ChoiceOption[],
@@ -259,7 +288,8 @@ All actions carry a nullable `SourcePlayerId` (null = system-issued) and a `Requ
 |---|---|
 | `PlayCardAction` | playerId, cardId, targetId? |
 | `AttackAction` | attackerId, targetId. **Handler (④), after ③ re-validation:** (1) snapshot the attacker's effective **base attack** (HS-style attack-lock; damage *modifiers* are pulled later, per `DealDamageAction` ④); (2) **consume the activation** — `attacksUsedThisTurn++`; (3) **break Stealth** if the attacker has it — an own-moment of *attacking*: clear the Stealth keyword and emit `StealthBrokenEvent` (attacking is what drops Stealth; merely being targeted/dealing non-attack damage does not — closes the Stealth half of hole #4); (4) emit `AttackPerformedEvent { attackerId, targetId }` (the post-interception **actual** target); (5) **enqueue two independent `DealDamageAction`s** — the strike (attacker → target, amount = the snapshotted attack) and, iff the defender's attack > 0, the retaliation (defender → attacker) — processed **sequentially, not atomically** (§3). **Freeze interaction:** a frozen attacker never reaches ④ (rejected at §4 ③ `AttackerFrozen`); conversely the `attacksUsedThisTurn` consumed in step 2 feeds the end-of-turn unfreeze sweep (Turn Lifecycle step 3) — a character frozen **this turn while exhausted** (it had already swung) **stays** frozen through its next turn, one frozen while it **still had an attack thaws** at the end of this turn, so Freeze costs exactly one attack. |
-| `UseHeroPowerAction` | playerId, targetId? |
+| `ActivateArtifactAction` | playerId, artifactId, targetId? — activate an **active** artifact (replaces `UseHeroPowerAction`, 2026-06-11). ③: own turn; artifact owned; activatable (`baseActivationCost != null`, else `ArtifactNotActive`); **pulled effective cost** ≤ `mana` (the definition's cost formula — the starter's = `base + usesThisTurn`); target ∈ the definition's selector. ④: pay the pulled cost, `usesThisTurn++`, enqueue the definition's activation effects, consume `durability` if activation is a declared consumer (`ArtifactDurabilityLostEvent`; at 0 → enqueue `DestroyArtifactAction`), emit `ArtifactActivatedEvent`. **Unlimited per turn** (no budget field — cost/durability limit it); does **not** increment `cardsPlayedThisTurn` (not a card play; Combo unaffected); declared at ③′ like any action (interceptable). |
+| `DiscardArtifactAction` | playerId, artifactId — the owner's in-turn right to free a slot: own turn, **free**, unlimited per turn. Unregisters the artifact's triggers/auras, snapshots it to the owner's graveyard (`GraveyardArtifact`), emits `ArtifactDiscardedEvent` — and **only** that (never `ArtifactDestroyedEvent`; the voluntary/involuntary split is two disjoint event types, not a `cause` field — the session-7 idiom). |
 | `EndTurnAction` | playerId |
 | `SubmitMulliganAction` | playerId, cardIdsToKeep[] |
 | `SubmitChoiceAction` | playerId, choiceId, selectedOptionId |
@@ -277,6 +307,9 @@ All actions carry a nullable `SourcePlayerId` (null = system-issued) and a `Requ
 | `SummonMinionAction` | definitionKey, ownerId?, boardPosition, sourceId? |
 | `EquipWeaponAction` | playerId, definitionKey, sourceId? |
 | `DestroyWeaponAction` | playerId, sourceId? |
+| `EquipArtifactAction` | playerId, definitionKey, sourceId? — the one equip path: playing an Artifact **card** enqueues it, and effects (battlecries etc.) enqueue the same action. A **player play** onto a full row (3) rejects at ③ (`ArtifactSlotsFull` — discard first, the BoardFull analogue); an **effect-enqueued** equip onto a full row **fizzles** at ④ re-validation (the full-board-summon pattern). Handler: append to `artifacts[]`, register the definition's triggers/auras (zone-entry, `birthEpoch` stamped — §3), emit `ArtifactEquippedEvent`. **Match setup** equips each player's starter artifact via this action. |
+| `DestroyArtifactAction` | artifactId, sourceId? — system/effect destruction + the durability-exhaustion path: unregister triggers/auras, snapshot → owner's graveyard (`GraveyardArtifact`), emit `ArtifactDestroyedEvent` (never `ArtifactDiscardedEvent`). |
+| `ModifyArtifactChargesAction` | artifactId, delta, sourceId — the sole `charges` mutation path → `ArtifactChargesChangedEvent`. (The dual-artifact example: passive trigger "a neutral minion dies" enqueues `+1`; active "deal `charges` damage to target", durability 3 consumed by activation.) |
 | `GiveCardAction` | playerId, definitionKey, sourceId? |
 | `ReturnToHandAction` | minionId, policy: MinionToCardPolicy, sourceId? |
 | `TransformMinionAction` | minionId, newDefinitionKey, sourceId? |
@@ -369,10 +402,20 @@ All events carry an `eventId: long` (append-order sequence number, unique per se
 |---|---|
 | `ManaChangedEvent` | playerId, mana, maxMana |
 | `HeroMortallyWoundedEvent` | playerId, sourceId — fires the instant a hero crosses to ≤0 health (from any damage — combat, spell, fatigue, self-damage), **before** the ⑧ win-check finalizes the loss; the hero analogue of `MinionMortallyWoundedEvent`, distinct from `GameEndedEvent` (the ⑧ finalization). The hook for save-the-hero reactions (heal-above-0 / immune in response to lethal — e.g. an Ice-Block-style effect realised as a post-reaction rather than damage prevention; for prevention see "Interception", §3). **No `cause` discriminator:** it was informational only (no card branches on it; save-from-lethal fires regardless of cause) and nothing in the engine populated it. Fatigue is identified by the `FatigueDamageEvent` that immediately precedes its `DealDamageAction`; other causes are reconstructable from the source/preceding events. Dropped rather than fed by a damage-cause taxonomy (YAGNI). |
-| `HeroPowerUsedEvent` | playerId, targetId? |
 | `WeaponEquippedEvent` | playerId, weapon |
 | `WeaponDestroyedEvent` | playerId, weapon |
 | `WeaponDurabilityLostEvent` | playerId, remainingDurability |
+
+**Artifacts** (replace the HeroPower events, 2026-06-11):
+
+| Event | Key fields |
+|---|---|
+| `ArtifactEquippedEvent` | playerId, artifact |
+| `ArtifactActivatedEvent` | playerId, artifactId, targetId? — the activation delta and the subscription point for `OnArtifactActivated` triggers (the renamed Inspire; no separate `InspireTriggeredEvent`-style marker — the activation event itself is the hook) |
+| `ArtifactDurabilityLostEvent` | artifactId, remainingDurability — parallels `WeaponDurabilityLostEvent`; the `remaining: 0` tick immediately precedes the enqueued `DestroyArtifactAction` |
+| `ArtifactChargesChangedEvent` | artifactId, newCharges, delta |
+| `ArtifactDiscardedEvent` | playerId, artifactId — **voluntary** removal only (owner's in-turn discard). Disjoint from `ArtifactDestroyedEvent` — never both; "leaves play for any reason" subscribes to both |
+| `ArtifactDestroyedEvent` | playerId, artifact (snapshot) — **involuntary** removal: durability exhaustion or a destroy effect |
 
 **Effects / Triggers:**
 
@@ -382,7 +425,6 @@ All events carry an `eventId: long` (append-order sequence number, unique per se
 | `BattlecryTriggeredEvent` | minionId |
 | `DeathrattleTriggeredEvent` | minionId |
 | `ComboTriggeredEvent` | cardId, playerId |
-| `InspireTriggeredEvent` | playerId |
 | `ActionDeclaredEvent` | action — the universal **pre-execution** signal: published at stage **③′** (§4) for every dispatched action *after* it validates and *before* it executes (④), carrying the action itself. The single hook for **interception** (declaration-phase) reactions; subscribers filter on the carried action's runtime type/params via the condition library, so **no per-action-type `*Declared` taxonomy is required**. Published afresh on **each (re-)declaration**: a held action resumed after a responder *played* an intervention re-validates and, if still legal, **re-declares** — re-publishing this event so the responder's remaining reactive cards get another window (the session-6 **re-declare loop**, §4 ③′); a **skip/timeout** resumes the held action without re-declaring. Redirect/secret loops are bounded not by suppressing re-declaration but by the **depth-1 nesting cap** (a response opens no further *player* window on itself) plus the responder's finite mana. **Bus-only: not a state delta, so excluded from the persisted event log and client wire format** (see the "Bus ⊋ log" note above). (The pre-existing typed `AttackDeclaredEvent` is the combat-specific declaration, retained for renderer convenience at the same timing; it is not the general hook.) |
 
 **Choice / Intervention:**
@@ -406,6 +448,7 @@ enum ActionRejectionCode {
     WrongPhase, NotActivePlayer, CardNotInHand, NotEnoughMana,
     InvalidTarget, TargetStealthed, MustTargetTaunt,
     AttackerNotAlive, AttackerNotControlled, AttackerCannotAttack, RushCannotTargetHero, AttackerFrozen, AttackerExhausted, BoardFull,
+    ArtifactSlotsFull, ArtifactNotActive,
     // … closed set; grows in lockstep with the §4 ②③ validation rules
 }
 
@@ -441,9 +484,9 @@ interface IActionHandler<TAction> where TAction : GameAction {
 
 ### `IEventBus`
 
-Broadcast backbone. Dispatches in the **canonical board order** (see Deterministic Ordering): three ordered groups per event type — the current (active) player's triggers, then the opponent's, then the **neutral zone's** — fired in that sequence, and within each group sorted by current board index at publish time (not at subscription time, so a minion that fills a vacated slot fires in the position it currently occupies). The neutral group is the trigger-side counterpart of the neutral zone's last slot in the death sort; it makes trigger fire order and death sort order **one rule**.
+Broadcast backbone. Dispatches in the **canonical board order** (see Deterministic Ordering): three ordered groups per event type — the current (active) player's triggers, then the opponent's, then the **neutral zone's** — fired in that sequence, and within each group sorted by current board index at publish time (not at subscription time, so a minion that fills a vacated slot fires in the position it currently occupies). **Within each player's group, that player's artifact-hosted triggers fire after their minion-hosted ones** (artifact slot order `artifacts[0..2]` as the within-row index, mirroring board index; 2026-06-11) — artifacts append to their owner's existing bucket rather than forming a fourth global group, which preserves the active-player-first promise (an active player's artifact fires before any opponent trigger). The neutral group is the trigger-side counterpart of the neutral zone's last slot in the death sort; it makes trigger fire order and death sort order **one rule**.
 
-This applies to **board-wide event triggers** (on-damage, on-death, on-spell-cast, on-summon, …) — a neutral minion's `FriendlyOnly`-conditioned trigger fires off its **lane-mates** (friendly is lane-based; see `ITriggerCondition`), so neutral minions trigger off each other just as a player's do. It does **not** make neutral minions fire **turn/hero-context** triggers, which stay empty for want of a referent (not because of the friendly relation): **Start/End-of-Turn** (enumerated per player in the Turn Lifecycle — a neutral minion has no turn of its own), **Inspire** (no hero power), **Combo** (no hand / turn play-count). This is all condition semantics, not a bus special-case.
+This applies to **board-wide event triggers** (on-damage, on-death, on-spell-cast, on-summon, …) — a neutral minion's `FriendlyOnly`-conditioned trigger fires off its **lane-mates** (friendly is lane-based; see `ITriggerCondition`), so neutral minions trigger off each other just as a player's do. It does **not** make neutral minions fire **turn/hero-context** triggers, which stay empty for want of a referent (not because of the friendly relation): **Start/End-of-Turn** (enumerated per player in the Turn Lifecycle — a neutral minion has no turn of its own), **OnArtifactActivated** (the renamed Inspire — "after *you* activate an artifact"; a neutral host has no artifact row of its own), **Combo** (no hand / turn play-count). This is all condition semantics, not a bus special-case. (Artifacts themselves, by contrast, participate in turn-scoped triggers normally — they have an owner with turns.)
 
 ```csharp
 interface IEventBus {
@@ -541,7 +584,7 @@ Every action carries a `sourceId`, and `EffectContext` is built from the **actio
 
 - A played card's effects (including Battlecry) → `sourceId` = the card.
 - A minion's triggered effects (Deathrattle, On-Damage, …) → `sourceId` = that minion. A trigger's `OnFire` stamps `sourceId = its host entity`; it does **not** pass along the source of the action that fired the trigger.
-- Hero power / weapon effects → that hero power / weapon.
+- Artifact / weapon effects → that artifact / weapon.
 - `sourcePlayerId` = the source's controller, captured at enqueue time (from the death snapshot if the source is already dead).
 
 So if Yeti's Deathrattle damages a minion, the damage's `sourceId` is **Yeti**, not the spell that killed Yeti. This determines friendly/enemy evaluation (Item 2 conditions), the Lifesteal heal target, and which entity "dealt" the damage for any watching trigger.
@@ -565,7 +608,7 @@ interface ITrigger {
 }
 ```
 
-Covers the full trigger catalog: Battlecry, Deathrattle, Start of Turn, End of Turn, Aura (continuous, via `IAura`), On Damage Taken, On Friendly Minion Death, On Spell Cast, Inspire, Combo, On Invert. New trigger types are added by implementing this interface. `ShouldFire` is typically delegated to an `ITriggerCondition` (below) rather than hand-written per card.
+Covers the full trigger catalog: Battlecry, Deathrattle, Start of Turn, End of Turn, Aura (continuous, via `IAura`), On Damage Taken, On Friendly Minion Death, On Spell Cast, On Artifact Activated (the renamed Inspire — fires off `ArtifactActivatedEvent`), Combo, On Invert. New trigger types are added by implementing this interface. `ShouldFire` is typically delegated to an `ITriggerCondition` (below) rather than hand-written per card.
 
 ### `ITriggerCondition`
 
@@ -591,7 +634,7 @@ enemy(h, e)     ⟺  h.ownerId != e.ownerId  &&  e.ownerId != null
 
 The `e.ownerId != null` clause is what makes a **neutral minion never anyone's *enemy***: for a player host it keeps neutral out of "enemy" (the separate third category); the asymmetry — a neutral host *does* see both boards as enemy — falls out because that clause passes whenever `e` is a player minion. `friendly` and `enemy` are mutually exclusive; exhaustive only from a neutral host (a player host has the neutral "neither" bucket). Heroes carry their player's id, so the same predicates classify friendly/enemy heroes; neutral has no hero.
 
-Genuinely **controller/turn-context** conditions are a *different* axis and stay empty for a neutral host because it lacks the referent, not because of the friendly relation: Start/End-of-Turn (no turn of its own — §3 `IEventBus`), Inspire (no hero power), Combo (no hand / turn play-count).
+Genuinely **controller/turn-context** conditions are a *different* axis and stay empty for a neutral host because it lacks the referent, not because of the friendly relation: Start/End-of-Turn (no turn of its own — §3 `IEventBus`), OnArtifactActivated (no artifact row of its own), Combo (no hand / turn play-count).
 
 **Single conditions — parameterless singletons** (referenced by reference; no per-check allocation):
 
@@ -609,7 +652,7 @@ Genuinely **controller/turn-context** conditions are a *different* axis and stay
 | Condition | Matches when |
 |---|---|
 | `MinionTypeIs(definitionKey)` | the event's relevant minion has that `definitionKey`. (Tribe-based matching — "any Beast" — depends on Item 8 tribes, not yet in the model; this matches a *specific* minion definition.) |
-| `CardTypeIs(CardType)` | the event's relevant card is a Minion / Spell / Weapon / HeroPower — e.g. "whenever you play a Spell **or** a Weapon" |
+| `CardTypeIs(CardType)` | the event's relevant card is a Minion / Spell / Weapon / Artifact — e.g. "whenever you play a Spell **or** a Weapon" |
 | `CostAtLeast(n)` / `CostAtMost(n)` | the event's relevant card's `effectiveCost` meets the threshold — e.g. "whenever you cast a 2-mana-or-higher spell" |
 
 **Combinators** compose conditions into a tree:
@@ -699,6 +742,7 @@ This subsection unifies Secrets, the locked Intervention system, and the dying-w
 | **board** (minion) | `OnSummon` (entering board) | ordinary reaction | existing |
 | **hand** (card) | the `DrawCard`/`GiveCard` handler (entering hand), dropped on play/discard/return | opens a **set-valued, looping intervention** window for the owner (play one / skip; re-opens on each play) | **this amendment** |
 | **secret zone** (card) | the play-to-secret handler | **auto-resolves** without a prompt (a Secret) | **deferred** (auto flavour + zone + visibility/cost — see end) |
+| **artifact row** (`ArtifactOnBoard`) | the `EquipArtifactAction` handler (entering the row), dropped on destroy/discard | **auto-resolves** (board-side zone — a passive artifact's triggers, and any `IAura` it hosts, behave exactly like a minion's; no player window). A trigger-fire consumes `durability` iff the definition declares trigger-fire a consumer | **added 2026-06-11** (artifacts) |
 
 All of this obeys the existing invariants unchanged: registration happens inside an action handler (④), so every reactive trigger has a `birthEpoch` and the creation-epoch filter (§3 `IEventBus`) stops a freshly-drawn card from reacting to the very event that drew it; the bus still carries only `ITrigger`. The hand is "armed" simply by holding the card — there is no separate arming step, and **what opens a window is precise and inspectable**: a card in hand whose live reactive trigger matched. This realises the locked Intervention scope ("play one card / skip") literally — the window only ever offers a card *designed* with a reactive trigger.
 
@@ -834,7 +878,7 @@ Worked example (attack → strike → retaliation → death → deathrattle):
 ```
 
 **Conventions.**
-- **Entity refs are bare ids** (`m3`, `c12`, `p1`, `h1` for heroes); the id → `definitionKey`/name join lives in `state` records — every line stays short, and the visualizer/pretty-printer does the join.
+- **Entity refs are bare ids** (`m3`, `c12`, `p1`, `h1` for heroes, `a2` for artifacts); the id → `definitionKey`/name join lives in `state` records — every line stays short, and the visualizer/pretty-printer does the join.
 - **Diff keys are dotted paths** (`m7.currentHealth`, `p1.mana`), values `[from, to]`. **Zone moves** use the entity id as key and zone paths as values (`"m3": ["p1.board[0]", "p1.graveyard"]`); board *reorders* trace the same way (index-to-index).
 - Action/event payloads inline their §2 fields verbatim — the trace schema **defers to §2** rather than re-declaring shapes.
 - **No `queueAfter`** — the remaining queue is derivable from `enqueued` + FIFO order; printing it per action is pure redundancy (a future verbose flag could add it if the queue *discipline itself* ever needs debugging).
@@ -845,7 +889,7 @@ JSON Lines keeps the artifact greppable and line-diffable (`grep MinionDiedEvent
 
 | Concern | Owner |
 |---|---|
-| **Canonical board order** (one rule, two consumers) | Active player's `board[0..n]` by index → opponent's `board[0..n]` by index → **neutral zone by index**. Used identically for **trigger fire order** (`IEventBus`, snapshot at *publish* time) and **death/deathrattle/reborn sort** (`DeathResolutionService`, snapshot at *collect* time). Board index primary; `summonOrder` is the disambiguation fallback. Heroes are not `board[]` members and enter sequencing only via `ITargetSelector` per its own definition. Neutral minions take part in board-wide *event* triggers (last) but **not** turn-scoped Start/End-of-Turn triggers (no turn of their own) — see §3 `IEventBus`. |
+| **Canonical board order** (one rule, two consumers) | Active player's `board[0..n]` by index → **their `artifacts[0..2]` by slot** (trigger side only, 2026-06-11) → opponent's `board[0..n]` by index → **their `artifacts[0..2]`** → **neutral zone by index**. Used identically for **trigger fire order** (`IEventBus`, snapshot at *publish* time) and **death/deathrattle/reborn sort** (`DeathResolutionService`, snapshot at *collect* time — artifacts never appear there: they have no health and are not death-wave members). Board index primary; `summonOrder` is the disambiguation fallback. Heroes are not `board[]` members and enter sequencing only via `ITargetSelector` per its own definition. Neutral minions take part in board-wide *event* triggers (last) but **not** turn-scoped Start/End-of-Turn triggers (no turn of their own) — see §3 `IEventBus`. |
 | Event visibility (new subscribers) | `IEventBus` — snapshot at publish + `birthEpoch < originEpoch` creation-epoch filter; a listener never receives events from the action that created it |
 | Death wave phases | `DeathResolutionService` — Phase 1 (remove) → Phase 2 (deathrattles) → Phase 3 (reborns) |
 | Deathrattle before Reborn | `DeathResolutionService` — Phase 3 runs only after all Phase 2 actions complete |
@@ -920,7 +964,7 @@ The registered handler for this action type is invoked. It mutates `GameState` a
 
 ### ⑤ Publish Events → `IEventBus`
 
-Events are published in the order returned by the handler. For each event, `IEventBus` snapshots the subscriber lists at publish time and fires them filtered by creation epoch (`birthEpoch < originEpoch`, see §3 `IEventBus`) in the canonical board order: current player's list first (sorted by current board index at publish time), then opponent's list, then the neutral zone's (each the same). The epoch filter means a listener never receives an event from the action that created it. Subscribers enqueue new actions via `IActionQueue` — they do not process them inline.
+Events are published in the order returned by the handler. For each event, `IEventBus` snapshots the subscriber lists at publish time and fires them filtered by creation epoch (`birthEpoch < originEpoch`, see §3 `IEventBus`) in the canonical board order: current player's list first (minions by current board index, then their artifacts by slot), then opponent's list (the same), then the neutral zone's. The epoch filter means a listener never receives an event from the action that created it. Subscribers enqueue new actions via `IActionQueue` — they do not process them inline.
 
 ### ⑥ Aura Recalculation
 
@@ -999,7 +1043,7 @@ The `EndTurnAction` handler and subsequent system actions implement the full tur
 4. **Mana refresh — for the player whose turn is ENDING** (moved from turn-start to turn-**end**, 2026-06-09): increment *their* `maxMana` (cap 10) and restore *their* `mana` to `maxMana`. Refreshing here pre-loads the full pool the player then carries **through the opponent's turn**, so an off-turn **intervention** spends straight from `mana` (the ordinary `effectiveCost ≤ mana` check) and the player's own next turn simply begins with whatever interventions didn't consume — **no `reservedMana` field, no separate ceiling**; the affordability ceiling is naturally their *full ramped* next-turn pool. (The game's first turn has no preceding turn-end, so game setup seeds each player's turn-1 `mana`/`maxMana` directly. A future overload-style "less mana next turn" effect would apply its reduction here.)
 5. Swap active player
 6. Clear `summoningSick` (wake) and reset `attacksUsedThisTurn` on all of the new active player's minions
-7. Reset `heroPowerUsedThisTurn`, `cardsPlayedThisTurn`
+7. Reset `cardsPlayedThisTurn`; reset `usesThisTurn` on each of the new active player's artifacts (re-arms escalating activation costs — §1 `ArtifactOnBoard`)
 8. Enqueue `DrawCardAction`
 9. Publish `TurnStartedEvent`
 10. Fire Start-of-Turn triggers (new active player L→R, then opponent L→R) — neutral minions excluded (turn-scoped; step 2)
