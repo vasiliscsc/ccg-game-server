@@ -137,6 +137,20 @@ Closed the **last open hole from the menu**. The empty-deck draw was unspecified
 
 **Uncommitted:** session-7 spec edits + this state + the borrow-list note are in the working tree (not yet committed — the earlier session-state mirror sync is also uncommitted per the user's "leave it for now").
 
+### Session 8 (2026-06-10): queued topic #3 — debug text format → structured per-action debug trace (DECIDED + APPLIED)
+
+**Re-scoped by the user at the first question:** not a scenario-authoring/parse format — a **read-only diagnostic the engine emits per processed action** (state + queued actions + events) for stepping through a failed test manually. Full record + Plan impact in the borrow-list note's **"Queued topics" #3**.
+
+- **Q&A pinned:** diff per action + full snapshots at cascade boundaries; stages traced **only when they act** (quiet stages invisible).
+- **The format fork (sigil ledger / narrative / YAML) was dissolved by the user's reframe:** emit *parsable structured records*; every human-friendly rendering — including an eventual **visualizer** — is a derived view. One schema, not three formats. With raw readability demoted (visualizer coming), encoding landed on **JSON Lines via System.Text.Json** (zero dependency, the stack `JsonElement` already commits to, append-as-it-happens so a mid-cascade crash leaves a valid trace, greppable/diffable) over YAML (YamlDotNet dependency + implicit-typing footguns; its readability edge no longer decisive), XML, and binary.
+- **Model:** `ITraceSink { Record(TraceRecord) }`, engine ctor takes `ITraceSink?` (null = zero overhead); emission from *inside* stages (rejections produce zero events — invisible to any event post-processor); **diffs by structural before/after compare** (clone cost only when attached; no mutation escapes unseen); `JsonLinesTraceSink(Stream)` default impl. **Record kinds:** `state` (match start + settle-to-idle; `definition` bodies elided, `definitionKey` only), `action` (per ④), `reject`, `window`/`choice` (opening only; the `Submit*` resolves as its own `action` record), `settle` (per ⑦ wave; ⑧ only when it acts). Conventions: bare ids, dotted diff paths `[from,to]`, zone moves, no `queueAfter` (derivable).
+- **Non-goals:** third purely-diagnostic stream (vs command log = canonical, event log = wire); visualizer + pretty-printers **out of library scope** (animation/bots ruling); no authoring DSL.
+- **Prior art:** HS `Power.log` (same shape at scale), old-project Spine/Exact traces (structured records enable assertion helpers later), `StabilizationAbortReport.cascadeTrace` = event-only cousin.
+
+**Spec edits APPLIED:** §3 — new **"Debug Trace (`ITraceSink`)"** subsection (after `IRandom`, before Deterministic Ordering): interface, emission model, record-vocabulary table, JSONL worked example, conventions, non-goals. §4 — intro cross-ref (emission points); `StabilizationAbortReport` note (attached sink = strictly richer repro view). No data-model change; no new events.
+
+**Remaining queued topics: #4 intervention visibility.**
+
 ### ⏹ SESSION STOP (2026-06-09, end of session 7)
 
 **State:** ALL session-7 work committed + pushed to `origin/main` — working tree clean, `main` in sync with remote. Commit trail (chronological):

@@ -786,6 +786,44 @@ interface IRandom {
 - **Ruleset-version pinning** — a command-log replay re-runs engine logic + card `definition` JSON, so it is only valid against the **same engine + card-definition version** it was recorded under (the classic command-log-replay fragility across patches). The replay package carries a ruleset/content version stamp.
 - **Command log vs. event log — two artifacts, two jobs.** The **command/input log is canonical**: compact, re-simulatable, the source of truth (but version-fragile per above). The **event log is the client wire format**, spectator/late-join stream, and version-robust archive: self-contained state deltas the client renders with **no game logic**, but *not* re-simulatable. (The event log is exactly the **handler-produced deltas**; transient bus signals — `ActionDeclaredEvent` — are excluded, as they carry no state change. See §2B "Bus ⊋ log".) The asymmetry: the **event log is derivable from the command log + seed, never the reverse** (events record outcomes, not the inputs/rolls that produced them) — so the command log is the richer artifact and the event log the safer/self-contained one.
 
+### Debug Trace (`ITraceSink`)
+
+A **third, purely diagnostic stream** alongside the two §3 `IRandom`-Replay artifacts (command log = canonical/re-simulatable; event log = client wire format): the debug trace has **no replay, persistence, or wire role**, is server-side only, and its shape may change freely between versions. Primary use: when a test fails, read the trace to step through what the engine actually did, action by action. Emitted only when a sink is attached (tests, local repro) — **zero overhead otherwise**.
+
+```csharp
+interface ITraceSink { void Record(TraceRecord r); }   // engine ctor takes ITraceSink? — null = no tracing
+```
+
+**Emission model.** The pipeline calls the sink from *inside* stages — necessarily so: a stage-③ rejection produces zero events by invariant (§2C), so no post-processor over the event stream could ever see it. **Diffs are computed by structural compare** of `GameState` before/after each action — the clone cost is paid only when a sink is attached, and compare-based diffing guarantees **no mutation can escape the trace unseen** (the property that matters when hunting a bug; an instrumented-setter approach can only miss writes). A `JsonLinesTraceSink(Stream)` ships as the default implementation: one compact JSON object per line (System.Text.Json — the stack the data model already commits to via `JsonElement`), written **append-as-it-happens** — a crash or hang mid-cascade leaves a valid, readable trace up to the failure point (precisely when the trace is wanted most). Pretty-printers and the eventual **visualizer are downstream consumers, out of library scope** (same ruling as the animation layer and bot scaffolding); the schema below is what makes them possible.
+
+**Record vocabulary** (JSON discriminator `k`; one record per *thing that happened*, in engine order — quiet stages emit nothing, per the stages-when-they-act principle):
+
+| `k` | When | Carries |
+|---|---|---|
+| `state` | Match start + each time a cascade fully settles to idle | Full `GameState` snapshot incl. ordered deck contents, plus `v` (trace format version), `sessionId`, `rngSeed`, `epoch`. **Elides `definition` bodies** — cards/minions carry `definitionKey` only (definitions are static content, reproducible from the library — the Fabrication-rule philosophy applied to the trace) |
+| `action` | One processed action (per ④; carries its `epoch`) | The action's own §2A params, then **only-if-nonempty**: `events` (⑤ payloads inline), `diff`, `enqueued` (each entry tagged `src` = enqueuing entity, so deathrattle-vs-trigger attribution is legible). Aura recalc (⑥) needs no marker — it surfaces as `aura*`/`attack`/`maxHealth` diff entries |
+| `reject` | ②/③ refusal | The submitted action + error code. Zero events/diff by invariant — the record proves the action was submitted and refused |
+| `window` | A `PendingIntervention` opens (③′ or ⑥′) | `at`, responder, candidates, held action if any. The *resolution* is **not** in this record — the later `SubmitInterventionAction` traces as its own `action` record (append-only, real-time order; the re-declare/re-offer loop traces naturally as alternating `window`/`action` records) |
+| `choice` | A `PendingChoice` opens | Same logic; `SubmitChoiceAction` resolves it as its own `action` record |
+| `settle` | Per death wave (⑦); ⑧ **only when it acts** (a hero ≤ 0) | ⑦: `wave`, `deaths[]`, events, diff (zone moves), enqueued deathrattles/reborns. ⑧: the win/draw/save outcome |
+
+Worked example (attack → strike → retaliation → death → deathrattle):
+
+```json
+{"k":"action","epoch":42,"action":{"type":"AttackAction","attacker":"m3","defender":"m7"},"events":[{"type":"AttackPerformedEvent","attacker":"m3","defender":"m7"}],"diff":{"m3.attacksUsedThisTurn":[0,1]},"enqueued":[{"type":"DealDamageAction","src":"m3","tgt":"m7","amount":2},{"type":"DealDamageAction","src":"m7","tgt":"m3","amount":4}]}
+{"k":"action","epoch":43,"action":{"type":"DealDamageAction","src":"m3","tgt":"m7","amount":2},"events":[{"type":"MinionDamagedEvent","minion":"m7","amount":2}],"diff":{"m7.currentHealth":[4,2],"m7.isDamaged":[false,true]}}
+{"k":"action","epoch":44,"action":{"type":"DealDamageAction","src":"m7","tgt":"m3","amount":4},"events":[{"type":"MinionDamagedEvent","minion":"m3","amount":4},{"type":"MinionMortallyWoundedEvent","minion":"m3"}],"diff":{"m3.currentHealth":[3,-1]}}
+{"k":"settle","wave":0,"deaths":["m3"],"events":[{"type":"MinionDiedEvent","minion":"m3"}],"diff":{"m3":["p1.board[0]","p1.graveyard"]},"enqueued":[{"type":"DeathrattleAction","minion":"m3","src":"m3"}]}
+```
+
+**Conventions.**
+- **Entity refs are bare ids** (`m3`, `c12`, `p1`, `h1` for heroes); the id → `definitionKey`/name join lives in `state` records — every line stays short, and the visualizer/pretty-printer does the join.
+- **Diff keys are dotted paths** (`m7.currentHealth`, `p1.mana`), values `[from, to]`. **Zone moves** use the entity id as key and zone paths as values (`"m3": ["p1.board[0]", "p1.graveyard"]`); board *reorders* trace the same way (index-to-index).
+- Action/event payloads inline their §2 fields verbatim — the trace schema **defers to §2** rather than re-declaring shapes.
+- **No `queueAfter`** — the remaining queue is derivable from `enqueued` + FIFO order; printing it per action is pure redundancy (a future verbose flag could add it if the queue *discipline itself* ever needs debugging).
+
+JSON Lines keeps the artifact greppable and line-diffable (`grep MinionDiedEvent trace.jsonl`; diff two runs line-by-line; `jq` for ad-hoc queries), and the line-per-record framing means a 30-action cascade reads top-to-bottom as a ledger even raw. Relation to `StabilizationAbortReport` (§4 ⑦): the report's `cascadeTrace` is the event-only cousin captured unconditionally; reproducing the abort under an attached `ITraceSink` yields the strictly richer per-action view (diffs, rejections, enqueue attribution).
+
 ### Deterministic Ordering
 
 | Concern | Owner |
@@ -807,6 +845,8 @@ interface IRandom {
 The pipeline is a **loop**, not a single linear pass (cadence amended 2026-06-03 — Fireplace amendment B). Stages **①–⑥ run per action** as each is dequeued; triggered reactions enqueue further actions, and the engine keeps dequeuing and running ①–⑥ until the **action queue is empty** — the point at which the cascade started by a top-level action has fully *settled*. Only then do the **settle stages** run: **⑦ Death Resolution** and **⑧ Win Check**. **⑨** drives the loop (dequeue next, or trigger the settle when the queue is empty). The engine never advances a stage until the current one completes.
 
 Because deaths are processed only at the settle point, **every triggered reaction from the settling cascade resolves *before* any minion is removed**: a minion reduced to ≤0 HP (or destroy-marked) is **mortally wounded** — still on the board, still targetable and countable, still keyword-active — until the settle, not removed on the spot. This is the Hearthstone-faithful cadence; it replaced an earlier per-action model where ⑦ ran at the tail of *every* action (so a dying minion vanished before same-event reactions ran). See amendment B in the borrow-list note for the design rationale, the mechanics it unlocks (overkill, retaliation, simultaneous-death, count-the-doomed, Intervention × lethal, Inversion × lethal), and the worked example.
+
+When a debug trace sink is attached (§3 `ITraceSink`), the pipeline emits one trace record per processed action (④), rejection (②/③), window/choice opening (③′/⑥′), and death wave (⑦) — plus full-state snapshots at match start and each settle-to-idle. See §3 for the record vocabulary.
 
 ### ① Submit
 
@@ -916,7 +956,7 @@ StabilizationAbortReport {
 }
 ```
 
-A regression scenario built from a report asserts: submitting `triggeringAction` against `preActionState` (seeded with `rngSeed`) terminates at wave `MaxDeathWaves` with `StabilizationAbortedEvent` then `GameEndedEvent { NoContest }` — i.e. it aborts rather than hangs.
+A regression scenario built from a report asserts: submitting `triggeringAction` against `preActionState` (seeded with `rngSeed`) terminates at wave `MaxDeathWaves` with `StabilizationAbortedEvent` then `GameEndedEvent { NoContest }` — i.e. it aborts rather than hangs. (Re-running that scenario with an `ITraceSink` attached (§3) upgrades the event-only `cascadeTrace` to the full per-action debug view — diffs, rejections, enqueue attribution.)
 
 ### ⑧ Win Condition Check
 
