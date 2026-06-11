@@ -921,6 +921,20 @@ The bundled deferrals: hero attack/weapon/durability wiring, hero armor, hero fr
 **Plan impact:** Epic 01 — `inscriptions` field, `MaxInscriptions`, 2 rejection codes; Epic 02 — inscribe branch on the play handler, 3 sigil events, `CardPlayedEvent` suppression; engine epics — inscription registration/drop, dispatch slot, actor-attribution skip, random-degradation path (reuses random-K — no new selector work), empty-pool guard, one-shot consume; content epic — sigil definitions need NO mode-specific sections (the response + declared choices are mode-agnostic; degradation is engine-side); Game-Server/UX — face-down rendering, masking options.
 **Tests:** opponent invocation on my turn springs my inscription (actor rule) / my own action never does / neutral-sourced springs both; duplicate + 4th inscribe reject; same-seed random degradation is deterministic and matches the held-mode selector pool; empty pool → stays inscribed; inscribed+held copies → auto fires then window offers the held one; chain of mutual inscriptions terminates ≤ row caps; inscribe play emits thin public + directed full, no `CardPlayedEvent`; ③′ declaration of an inscribe play is redacted.
 
+## R2 inversion stat-math — PINNED (session 9 part 5, 2026-06-11)
+
+The last item from amendment B's deferred list (deferred 2026-06-03 "to pin when the card is designed"; resurfaced by the session-9 deferral scan). While answering "what was the R2 stat-math?", the re-check found the deferral **undersold the gap**: `InvertTargetAction` was a bare table row — the spec had all inversion *plumbing* but never defined the stat arithmetic of an invert at all, even for undamaged minions; the unwritten ④ handler of a core v1 mechanic, blocking Epic implementation day-one. User picked from three candidates (clear-damage / damage-carries / direct value swap):
+
+**✅ DECISION: Option 3 — `currentHealth` and `attack` trade places, on AURA-EXCLUSIVE values; auras re-applied after** (the re-apply clause costs nothing: the handler operates on aura-stripped values and the existing per-action ⑥ recalc rebuilds bonuses on the new orientation).
+
+**Derived consequences (flagged + accepted):**
+- **Enchantment deltas flip** (`attackDelta ↔ healthDelta`) and the **base pair swaps systemically** (the definition's inverted section defines effects/triggers only, never its own stat line) — both forced by self-consistency: they make post-invert `currentHealth = maxHealth` exactly. **An inverted minion always lands at full flipped health; damage persists as reduced attack, not as damage.**
+- **The damage carrier is a system `StatModifier { attackDelta: −min(D, auraless maxHealth), sourceId: "inversion" }`** — attack stays derived, never negative. Re-inverting an unhealed minion trades the penalty back as a health delta (the wound returns; an R2-saved minion re-doomed if re-inverted before healing). **Silence forgives the traded damage** (it clears all enchantments incl. the memento) — accepted as flavor-consistent.
+- **R2 × lethal works as the cadence decision envisioned:** mortally wounded (`H ≤ 0`) → invert in the dying window → full flipped health, 0 attack, survives ⑦ iff auraless attack `A > 0`. Worked examples: 4/5 @ 7 dmg → 4/4 full, attack 0, lives; 4/5 @ 2 dmg → 4/4 full, attack 3.
+- `UnInvertTargetAction` = the same symmetric operation; mismatched `isInverted` state → no-op, no event. Card-in-hand inversion = flip minus the trade (no `currentHealth`).
+
+**Plan impact:** the inversion/effects epic's `InvertTargetAction` ticket now has full ④ semantics to implement (trade + delta-flip + memento + no-op rule); data-model ticket: none (no new fields — the memento is an ordinary `StatModifier`). **Tests:** the two worked examples; invert→re-invert returns original `currentHealth`/attack (wound returns); silence-after-invert restores full flipped attack; aura +1/+1 present during invert: stripped before trade, re-applied after (⑥); mortally-wounded save iff `A > 0`; `UnInvert` on normal minion no-ops; card-side flip swaps `modifiers` deltas.
+
 ## Topics deliberately omitted
 
 These came up in the investigation but don't merit changes:
