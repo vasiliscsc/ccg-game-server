@@ -935,6 +935,21 @@ The last item from amendment B's deferred list (deferred 2026-06-03 "to pin when
 
 **Plan impact:** the inversion/effects epic's `InvertTargetAction` ticket now has full ④ semantics to implement (trade + delta-flip + memento + no-op rule); data-model ticket: none (no new fields — the memento is an ordinary `StatModifier`). **Tests:** the two worked examples; invert→re-invert returns original `currentHealth`/attack (wound returns); silence-after-invert restores full flipped attack; aura +1/+1 present during invert: stripped before trade, re-applied after (⑥); mortally-wounded save iff `A > 0`; `UnInvert` on normal minion no-ops; card-side flip swaps `modifiers` deltas.
 
+## Marked-for-destruction scope — RESOLVED, option A (session 9 part 6, 2026-06-12)
+
+The last deliberately-deferred design question in the spec (point-D leftover). Re-grounding found a **latent trap**: `MinionMortallyWoundedEvent` — the dying-window hook — fired on destroy-marks too, so a mark would open the save window, offer heal/invert cards, and let the player waste one on an unsavable minion.
+
+**✅ DECISION: Option A — the fiat doom is absolute and silent post-④.** User's understanding, confirmed as the rule: *MortallyWounded occurs only when `currentHealth` reaches ≤ 0 (damage, or aura/enchant loss collapsing `maxHealth` — both health-domain and both savable). Once a minion is marked for death there is no saving it — it dies at ⑦ no matter what; the only counterplay is preventing the mark (③′ interception of the `DestroyMinionAction`: cancel/retarget). Once applied, it's over.*
+
+- **Event narrowed:** `MinionMortallyWoundedEvent` = health-domain only; a destroy-mark emits **no event** (silent until `MinionDiedEvent` at settle) — no futile window can open. Retro-strengthens the session-7 `cause` drop: with marks excluded, all remaining causes are health crossings, indistinguishable-by-need.
+- **Two-channel counterplay grammar** (matches unanimous prior art — MTG counter-the-spell/"can't be regenerated"/indestructible, HS Counterspell, YGO pre-resolution chains, LoR damage<kill<obliterate tiers; the one counterexample, MTG regeneration, was deprecated after decades of escape-hatch text): **fiat dooms preventable at the cause (③′); health dooms savable at the consequence (⑥′/dying window until settle).**
+- **Terminology pinned:** "pending death" = the shared lingering-on-board state (both kinds); "mortally wounded" = the health-domain savable kind only (§4 amendment-B narrative reworded).
+- **Riders:** inverting a marked minion executes the part-5 trade but the mark survives (dies anyway — clause added to the `InvertTargetAction` row); both dooms can coexist (mark wins); `Alive…`/`Dead…` selectors stay **health-only, deliberately** — a marked healthy minion sits in `Alive…` (correct: `Dead…` is the save-targeting family; for AoE/counts/retaliation it behaves as the living presence it is); a future "cleanse the mark" = additive unmark action, rejected for v1 (Item-10 disposition).
+- **Spec edits:** §1 `currentHealth` comment (savability split), §2A `DestroyMinionAction` (full ④ handler — was a bare row), §2B `MinionMortallyWoundedEvent` (narrowed), §3 selector-trichotomy note + InvertTargetAction clause + "Still deferred" block → "Nothing remains deferred", §4 amendment-B terminology.
+- **Plan impact:** Epic 02 — `DestroyMinionAction` handler semantics (mark, no event); engine/death epic — ⑦ collection unchanged, window-opening reads the narrowed event; tests: mark at full health → no `MinionMortallyWoundedEvent`, no ⑥′ window, dies at settle; heal/invert on marked minion → resolves, mark survives, dies; ③′ cancel of a `DestroyMinionAction` → minion lives; marked minion retaliates but cannot initiate; marked+≤0 minion → one death, one graveyard entry; Poisonous proc is interceptable at ③′.
+
+**With this, the spec has ZERO open design questions.** Every item is decided, recorded, or explicitly re-scoped to v2 (crafting). Pre-implementation work remaining: plan reconciliation only.
+
 ## Topics deliberately omitted
 
 These came up in the investigation but don't merit changes:
