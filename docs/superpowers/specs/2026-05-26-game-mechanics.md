@@ -658,7 +658,8 @@ Genuinely **controller/turn-context** conditions are a *different* axis and stay
 
 | Condition | Matches when |
 |---|---|
-| `MinionTypeIs(definitionKey)` | the event's relevant minion has that `definitionKey`. (Tribe-based matching — "any Beast" — depends on Item 8 tribes, not yet in the model; this matches a *specific* minion definition.) |
+| `MinionTypeIs(definitionKey)` | the event's relevant minion has that `definitionKey` — a *specific* minion definition. (For tribal matching — "any Beast" — use `HasTribe`, below.) |
+| `HasTribe(Tribe)` | the event's relevant minion's **`effectiveTribes`** (intrinsic \| granted \| aura — §1 Tribes) intersects the given flags — e.g. "whenever a **Beast** dies". The condition-side dual of the `MinionsWithTribe(Tribe)` selector factory; reads the effective view, so aura-granted tribes match while the aura holds. *(Added 2026-06-11 — closed a gap left when Item 8 landed tribes: the selector side got `MinionsWithTribe`, the condition side got nothing.)* |
 | `CardTypeIs(CardType)` | the event's relevant card is a Minion / Spell / Artifact — e.g. "whenever you play a Spell **or** an Artifact" |
 | `CostAtLeast(n)` / `CostAtMost(n)` | the event's relevant card's `effectiveCost` meets the threshold — e.g. "whenever you cast a 2-mana-or-higher spell" |
 
@@ -670,7 +671,7 @@ Genuinely **controller/turn-context** conditions are a *different* axis and stay
 | `Any(c1, c2, …)` (OR) | at least one child matches; `Any()` with no children does not match |
 
 Combinators nest. Example — *"whenever a friendly Murloc or Beast dies"*:
-`All(FriendlyOnly, Any(MinionTypeIs("murloc"), MinionTypeIs("beast")))`.
+`All(FriendlyOnly, HasTribe(Tribe.Murloc | Tribe.Beast))` — the `[Flags]` intersection makes the `Any` unnecessary for tribes (one flag test); `Any` remains for heterogeneous alternatives, e.g. `Any(HasTribe(Tribe.Beast), MinionTypeIs("patient_zero"))`.
 
 (`Not(c)` is the obvious third combinator — same shape — needed the first time a card reads "any *other* friendly minion died" = `All(FriendlyOnly, Not(SelfIsRelated))`. Left out of v1 until a card requires it.)
 
