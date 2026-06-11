@@ -199,6 +199,28 @@ Resumed at the re-posed `heroAttack` question (temporary-vs-persistent). **The u
 
 **THE SPEC HAS ZERO OPEN DESIGN QUESTIONS** (the review found *execution* defects + holes, not unsettled design forks — except where flagged). Everything is decided, recorded, or explicitly v2 (crafting). **The only remaining pre-implementation work is the end-of-pass plan reconciliation** (all `Plan impact:` lists → epic/ticket files; weapon-scope deletion + artifact re-scope + sigil additions + the library-seam constraint + `HasTribe` + `InvertTargetAction` + `DestroyMinionAction` semantics; stale-name sweeps) → then **Epic 01 / T1.1**.
 
+### ⏹ SESSION STOP (2026-06-12, end of session 9 — spanned 06-11 → 06-12)
+
+**State:** ALL session-9 work committed + pushed to `origin/main` — working tree clean. Commit trail (chronological):
+- `8b46ddf` — hero-weapon concept DROPPED + hero armor landed (hero-combat pass **CLOSED**; heroes never attack/freeze, Weapon CardType gone, `armor` + absorb slot + `armorAbsorbed`)
+- `3f5aade` — **SIGILS**: unified reactive-card model (invoke from hand / inscribe face-down; choice→random degradation; one-per-name cap 3; actor-attribution firing rule; pay-on-inscribe; one-shot; directed/public sigil events)
+- `57920e8` — card crafting re-scoped to **v2** (aether + purchase-components sketch + v1 audit → `notes/2026-06-11-card-crafting-v2.md`; v1 obligation = overlay-capable library-lookup seam)
+- `bdf29bd` — `HasTribe(Tribe)` condition (Item-8 condition-side gap; combinator example fixed)
+- `9f64ee8` — inversion stat-math PINNED (option 3: `currentHealth`↔`attack` trade on aura-exclusive values; delta-flip; damage→attack-penalty memento)
+- `a4a1b10` — destroy-marks FINAL + SILENT (option A; `MinionMortallyWoundedEvent` narrowed to health-domain; `DestroyMinionAction` ④ handler specced; "pending death" vs "mortally wounded" terminology)
+- `443a407` — **read-only SPEC REVIEW**: `notes/2026-06-12-spec-review-findings.md` — 33 tagged findings + Hearthstone-differences chapter (NO spec edits)
+- `<this commit>` — session-9 stop block.
+
+**What session 9 was:** the most decision-dense session yet — closed the hero-combat pass via the weapon-drop pivot, invented the sigil system (the secrets bundle's resolution), drained EVERY deferral in the document (crafting→v2, `HasTribe`, R2 inversion math, destroy-mark scope), then produced the full spec audit. The spec is design-complete; the audit found execution defects, not open forks (with a handful of micro-forks flagged inside findings).
+
+**▶ RESUME POINT — the SPEC-REVIEW FIX PASS.** The user took `notes/2026-06-12-spec-review-findings.md` away to review offline and will return with their own read. Next session:
+1. **Ask for their annotations first** — which findings they accept/reject/re-scope; their review overrides the document (expect reframes per [[feedback-design-fork-style]]).
+2. Walk the accepted findings **in document order** (contradictions → bugs → holes → drift → limitations). Two work kinds, interleaved:
+   - **Mechanical fixes** (apply on go-ahead, batch-commit): #1 ③-aliveness wording, #2 directed draw-events split, #3 Poisonous scope, #4 Lifesteal null-owner no-op, #5 `AttackDeclaredEvent` log-status carve-out, #7 ⑤-ordering text, #8 trace-example vocabulary, #9 `IAura` naming note, #10 stale-text bundle, #25 hand-drop-list wording, #28 constants block, #29 `MinionStatsChangedEvent` deletion.
+   - **Micro-forks needing the user** (present trade-off + recommend, per the established Q&A pattern): #6 `isDamaged` delete-vs-specify; #11 setup values (starting health/hand sizes/mulligan rules/2nd-player comp — pure game-design numbers); #12 hero max-health + hero entity-id convention; #13 healthDelta↔currentHealth rules (recommend HS-exact: gain raises current, loss clamps, silence clamps no-min-1); #16 responder definition + hand-side actor-attribution (recommend: mirror the inscription rule — hand sigils never window on their owner's own actions; neutral-attributed → both players, active-player-first order); #17 sourceless-action attribution fallback (recommend: `playerId` param); #18 windows inside ⑦ Phase 2/3 (recommend: active — next-wave deferral makes saves coherent); #20 Reborn 1-HP param; #21 full-hand bounce/give policies (recommend HS: destroy / burn); #23 invocation Combo accounting; #24 choice-timeout policy; #27 `Start*` declarability exemption; #30 `CardInvertedEvent` visibility; #31 inscription-counterplay Unaddressed entry; #32 stealth/random-K sentence.
+3. **Record the pass** in the borrow-list note (new section "Spec-review fix pass", with `Plan impact:` lines where fixes touch epics) + re-grep after each batch + commit per batch (established rhythm).
+4. **Then:** the end-of-pass **plan reconciliation** (existing backlog in the paragraph above + whatever the fix pass adds) → implementation at **Epic 01 / T1.1**.
+
 ### ⏹ SESSION STOP (2026-06-09, end of session 7)
 
 **State:** ALL session-7 work committed + pushed to `origin/main` — working tree clean, `main` in sync with remote. Commit trail (chronological):
