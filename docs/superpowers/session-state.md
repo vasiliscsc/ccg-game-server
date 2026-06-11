@@ -174,6 +174,17 @@ Then close the pass: delete the two Unaddressed-Features entries (freeze/armor),
 
 **After the pass:** the only remaining pre-implementation item is the **end-of-pass plan reconciliation** (now also: re-scope any hero-power tickets to artifacts; sweep `candidateCardIds` → `candidates`, `eventId`, trace ticket, directed events) → then implementation at **Epic 01 / T1.1**.
 
+### Session 9 (2026-06-11): hero-combat pass CLOSED — the hero-weapon concept is DROPPED, armor lands (DECIDED + APPLIED)
+
+Resumed at the re-posed `heroAttack` question (temporary-vs-persistent). **The user pivoted past the fork: drop the whole concept** — heroes can't attack, can't be frozen, have no equippable weapons; *"the Artifacts we scoped are sufficient"* as the hero kit. That dissolved pass items 1/2/4 (hero-as-attacker wiring, durability, hero freeze). The one genuine residual fork — **hero armor**, which is defense and so survives the offense demolition — went to **keep, land now** (recommended; its "rides the hero-combat path" deferral reason evaporated with the path).
+
+- **Demolition:** §1 `heroAttack` + `weapon?` + `WeaponOnHero` + `GraveyardWeapon` REMOVED; `CardType` → `Minion | Spell | Artifact` (no weapon cards); §2A `EquipWeaponAction`/`DestroyWeaponAction` + §2B the 3 weapon events REMOVED. Freeze ruling (flagged, no real fork): **heroes cannot be frozen** — freeze denies attacks, heroes have none; `FreezeTargetAction.targetId` is a minionId; "frozen character" → "frozen minion" swept.
+- **Armor:** `PlayerState.armor` (init 0, no cap), `GainArmorAction`/`ArmorGainedEvent`; ④ precedence step (6) generalized to the **target-typed absorb slot** (minion → Divine Shield all-or-nothing; hero → armor partial absorb); **`armorAbsorbed` = a field on `DamageTakenEvent`** (the `overkill` one-occurrence-split-delta idiom, not the disjoint-event idiom). Fatigue auto-absorbs; the §3 "gain armor" interception pillar + session-6 armor-secret example now fully backed.
+- **Part-1 lock now structural:** hero defenders never retaliate because retaliation is gated on defender attack > 0 and heroes have none. Heroes stay ordinary attack *targets*.
+- Both Unaddressed-Features entries (hero freeze / hero armor) replaced by one RESOLVED record. Spec re-grepped clean (no stale `weapon`/`heroAttack`/`frozen character`/`hero-combat` outside intentional decision notes). §1 mirror block re-synced (provenance updated). Full record + Plan impact: borrow-list note **"Hero-combat pass" Part 2**.
+
+**HERO-COMBAT PASS CLOSED. Every pre-implementation design thread is now resolved.** The single remaining task before implementation is the **end-of-pass plan reconciliation** (all `Plan impact:` lists → epic/ticket files; weapon-scope deletion + artifact re-scope; stale-name sweeps) → then **Epic 01 / T1.1**.
+
 ### ⏹ SESSION STOP (2026-06-09, end of session 7)
 
 **State:** ALL session-7 work committed + pushed to `origin/main` — working tree clean, `main` in sync with remote. Commit trail (chronological):
@@ -310,7 +321,7 @@ Items, ordered by impact (✅ = resolved this pass):
 ## Decided feature scope (locked in brainstorming)
 
 ### Card types
-**Minion, Spell, Weapon, Artifact**. Hero/class is tied to the deck (like Hearthstone). *(Revised 2026-06-11: the original fourth type, Hero Power, was replaced by the **Artifact** system — stakeholder/playtest feedback; see session 8 part 2 + spec §1 `ArtifactOnBoard`.)*
+**Minion, Spell, Artifact**. Hero/class is tied to the deck (like Hearthstone). *(Revised 2026-06-11 twice: the original fourth type, Hero Power, was replaced by the **Artifact** system — stakeholder/playtest feedback; then **Weapon was REMOVED** with the whole hero-weapon concept — heroes never attack, the hero kit is the artifact row. See sessions 8/9 + spec §1.)*
 
 ### Keywords (all selected, system must be extensible)
 Taunt, Divine Shield, Charge, Rush, Lifesteal, Windfury, Poisonous, Stealth, Spell Damage +X, Reborn, Enrage, Freeze — plus any future keywords added via new `IKeyword` implementations.
@@ -358,7 +369,7 @@ When an opponent declares an action, the other player gets a **single-response w
 
 ## Approved data model (Section 1)
 
-> **Provenance (synced 2026-06-09):** this block is a convenience mirror of spec §1 (`specs/2026-05-26-game-mechanics.md`). The **spec is authoritative** — on any conflict, the spec wins. Re-synced through end of session 6 (`a9cdb97`): field renames `cardId`→`definitionKey`, `canAttack`→`summoningSick`, dropped `attacksAllowedThisTurn`; added neutral-zone/origin/3-field tribe+keyword/freeze/reborn fields; `GraveyardEntry.originalCard` removed; `PendingIntervention` set-valued; turn-end mana refresh; **session 7** added `PlayerState.fatigueCounter` + dropped `cause` from the two mortally-wounded events. Comments trimmed vs. spec; read the spec for full rationale.
+> **Provenance (synced 2026-06-09):** this block is a convenience mirror of spec §1 (`specs/2026-05-26-game-mechanics.md`). The **spec is authoritative** — on any conflict, the spec wins. Re-synced through end of session 6 (`a9cdb97`): field renames `cardId`→`definitionKey`, `canAttack`→`summoningSick`, dropped `attacksAllowedThisTurn`; added neutral-zone/origin/3-field tribe+keyword/freeze/reborn fields; `GraveyardEntry.originalCard` removed; `PendingIntervention` set-valued; turn-end mana refresh; **session 7** added `PlayerState.fatigueCounter` + dropped `cause` from the two mortally-wounded events; **session 9 (2026-06-11)** dropped the hero-weapon concept (`heroAttack`, `weapon`, `WeaponOnHero`, `GraveyardWeapon`, Weapon card type all REMOVED — heroes never attack) and added `PlayerState.armor`. Comments trimmed vs. spec; read the spec for full rationale.
 
 ### GameState
 ```
@@ -389,12 +400,12 @@ repopulateOnTurnStart: bool
 ### PlayerState
 ```
 playerId, heroClass: string
-health, mana, maxMana, heroAttack: int
+health, mana, maxMana: int
+armor: int                    // hero damage ABSORBER (init 0, no cap); depleted before health at §4 ④ (hero absorb slot; minion analogue = Divine Shield); gained only via GainArmorAction. Heroes have NO attack/weapon/frozen state — heroes never attack (2026-06-11)
 hand: Card[]
 deck: Card[]
 board: MinionOnBoard[]        // player's own side only
-graveyard: GraveyardEntry[]   // unified — minions + spells + weapons
-weapon?: WeaponOnHero
+graveyard: GraveyardEntry[]   // unified — minions + spells + artifacts
 artifacts: ArtifactOnBoard[]  // artifact row, cap 3 incl. the starter (hero-power REPLACEMENT, 2026-06-11); heroPower/heroPowerUsedThisTurn REMOVED
 cardsPlayedThisTurn: int      // Combo tracking
 fatigueCounter: int           // empty-deck-draw counter; init 0, never resets; ++ then deal the new value to this hero (1,2,3,…) — §2A DrawCardAction
@@ -435,11 +446,11 @@ rebornAvailable: bool         // one-time Reborn charge (distinct from the persi
 ```
 id, name: string
 definitionKey: string         // only cross-entity link into card-def library; distinct from per-instance `id`
-type: CardType                // Minion | Spell | Weapon | Artifact   (Artifact replaced HeroPower, 2026-06-11)
+type: CardType                // Minion | Spell | Artifact   (Artifact replaced HeroPower; Weapon REMOVED — both 2026-06-11)
 rarity: CardRarity
 tribes: Tribe                 // [Flags] intrinsic taxonomy from definition; Tribe.None = tribeless (valid); NOT cleared by Silence
 baseManaCost: int
-baseAttack?, baseHealth?: int // Minion / Weapon only
+baseAttack?, baseHealth?: int // Minion only
 modifiers: StatModifier[]     // in-hand cost/stat changes; attack/healthDelta migrate to enchantments on play
 grantedKeywords: string[]     // carried from a RetainEnchantments bounce/shuffle; migrate to the new minion's grantedKeywords on play; not part of base definition
 effectiveCost: int            // max(0, baseManaCost + Σmodifiers.costDelta)
@@ -473,10 +484,6 @@ GraveyardSpell : GraveyardEntry
   definitionKey: string     // a spell has no board snapshot → stores its own identity
   isInverted: bool          // → card fabricated from these on recast
 
-GraveyardWeapon : GraveyardEntry
-  weaponState: WeaponOnHero // carries definitionKey → card derivable
-  destroyedOnTurn: int
-
 GraveyardArtifact : GraveyardEntry
   artifactState: ArtifactOnBoard // full snapshot; both DISCARD and DESTROY land here (2026-06-11)
   destroyedOnTurn: int
@@ -484,7 +491,6 @@ GraveyardArtifact : GraveyardEntry
 
 ### Supporting types
 ```
-WeaponOnHero        — definitionKey: string, attack: int, durability: int
 ArtifactOnBoard     — artifactId, definitionKey, ownerId: string; baseActivationCost: int? (null = passive-only; effective cost PULLED
                       from the definition's formula — starter = base + usesThisTurn); durability: int? (null = infinite; ONE counter,
                       definition declares consuming moments: activation / trigger-fire / both); charges: int (generic accumulator,

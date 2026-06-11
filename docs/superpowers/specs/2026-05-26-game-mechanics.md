@@ -40,12 +40,12 @@ repopulateOnTurnStart: bool
 
 ```
 playerId, heroClass: string
-health, mana, maxMana, heroAttack: int
+health, mana, maxMana: int
+armor: int                    // hero damage ABSORBER (init 0, no cap): depleted before health at the §4 ④ damage-modifier precedence (hero slot — the minion analogue is Divine Shield). Gained only via GainArmorAction. NOTE heroes have NO attack stat, NO weapon, NO frozen state — heroes never attack (hero-weapon concept dropped 2026-06-11; the hero kit is the artifact row below)
 hand: Card[]
 deck: Card[]
 board: MinionOnBoard[]        // player's own side only; ordered left to right
-graveyard: GraveyardEntry[]   // unified — minions + spells + weapons
-weapon?: WeaponOnHero
+graveyard: GraveyardEntry[]   // unified — minions + spells + artifacts
 artifacts: ArtifactOnBoard[]  // the player's artifact row (own board section, NOT minions) — cap GameConstants.MaxArtifacts = 3
                               // incl. the STARTER artifact equipped at match setup (one shared definitionKey for every hero —
                               // the hero-power replacement, 2026-06-11). See ArtifactOnBoard.
@@ -115,11 +115,11 @@ equippedOnTurn: int
 ```
 id, name: string
 definitionKey: string         // the only cross-entity link into the card-definition library (Identity section); distinct from `id`, which is the per-instance allocator
-type: CardType                // Minion | Spell | Weapon | Artifact   (Artifact replaced HeroPower, 2026-06-11)
+type: CardType                // Minion | Spell | Artifact   (Artifact replaced HeroPower, 2026-06-11; Weapon REMOVED 2026-06-11 — heroes never attack, no weapon cards exist)
 rarity: CardRarity
 tribes: Tribe                 // [Flags] intrinsic taxonomy from the definition; Tribe.None = tribeless (valid). Gameplay tag; NOT cleared by Silence. See "Tribes" below.
 baseManaCost: int
-baseAttack?, baseHealth?: int // Minion / Weapon only
+baseAttack?, baseHealth?: int // Minion only
 modifiers: StatModifier[]     // in-hand cost/stat changes; attack/healthDelta migrate to enchantments on play
 grantedKeywords: string[]     // keywords carried over from a RetainEnchantments bounce/shuffle. On play, these migrate to the new minion's grantedKeywords (and keywords) — they are not part of the card's base definition.
 effectiveCost: int            // max(0, baseManaCost + Σmodifiers.costDelta)
@@ -156,11 +156,7 @@ GraveyardMinion : GraveyardEntry
 
 GraveyardSpell : GraveyardEntry
   definitionKey: string     // a spell has no board snapshot, so it stores its own identity here
-  isInverted: bool          // (its analogue of snapshot/weaponState) → card fabricated from these on recast
-
-GraveyardWeapon : GraveyardEntry
-  weaponState: WeaponOnHero // carries definitionKey → card derivable
-  destroyedOnTurn: int
+  isInverted: bool          // (its analogue of the minion/artifact snapshot) → card fabricated from these on recast
 
 GraveyardArtifact : GraveyardEntry
   artifactState: ArtifactOnBoard // full snapshot (carries definitionKey → card derivable); both DISCARD and DESTROY land here
@@ -170,7 +166,6 @@ GraveyardArtifact : GraveyardEntry
 ### Supporting types
 
 ```
-WeaponOnHero        — definitionKey: string, attack: int, durability: int
 TurnState           — activePlayerId: string, number: int
 TimerState          — secondsRemaining: int
 PendingChoice       — waitingPlayerId: string, choiceType: ChoiceType, options: ChoiceOption[],
@@ -280,14 +275,14 @@ Actions are immutable commands (input layer). Events are immutable facts (output
 
 All actions carry a nullable `SourcePlayerId` (null = system-issued) and a `RequestedAt` timestamp. The engine infers entity type (minion vs hero vs card) from the ID at processing time — actions do not carry type discriminators.
 
-**ID convention:** a `cardId` / `minionId` / `targetId` field names an **existing instance** in a zone (a `Card.id`, a `MinionOnBoard.minionId`, …); a `definitionKey` field names a **library key to fabricate or summon from**, where no instance exists yet (summoning a token, generating a card into hand, equipping a weapon, transforming). The two are never interchangeable — see "Card and Minion Identity" (§1).
+**ID convention:** a `cardId` / `minionId` / `targetId` field names an **existing instance** in a zone (a `Card.id`, a `MinionOnBoard.minionId`, …); a `definitionKey` field names a **library key to fabricate or summon from**, where no instance exists yet (summoning a token, generating a card into hand, equipping an artifact, transforming). The two are never interchangeable — see "Card and Minion Identity" (§1).
 
 **Player-initiated:**
 
 | Action | Key fields |
 |---|---|
 | `PlayCardAction` | playerId, cardId, targetId? |
-| `AttackAction` | attackerId, targetId. **Handler (④), after ③ re-validation:** (1) snapshot the attacker's effective **base attack** (HS-style attack-lock; damage *modifiers* are pulled later, per `DealDamageAction` ④); (2) **consume the activation** — `attacksUsedThisTurn++`; (3) **break Stealth** if the attacker has it — an own-moment of *attacking*: clear the Stealth keyword and emit `StealthBrokenEvent` (attacking is what drops Stealth; merely being targeted/dealing non-attack damage does not — closes the Stealth half of hole #4); (4) emit `AttackPerformedEvent { attackerId, targetId }` (the post-interception **actual** target); (5) **enqueue two independent `DealDamageAction`s** — the strike (attacker → target, amount = the snapshotted attack) and, iff the defender's attack > 0, the retaliation (defender → attacker) — processed **sequentially, not atomically** (§3). **Freeze interaction:** a frozen attacker never reaches ④ (rejected at §4 ③ `AttackerFrozen`); conversely the `attacksUsedThisTurn` consumed in step 2 feeds the end-of-turn unfreeze sweep (Turn Lifecycle step 3) — a character frozen **this turn while exhausted** (it had already swung) **stays** frozen through its next turn, one frozen while it **still had an attack thaws** at the end of this turn, so Freeze costs exactly one attack. |
+| `AttackAction` | attackerId, targetId. **Handler (④), after ③ re-validation:** (1) snapshot the attacker's effective **base attack** (HS-style attack-lock; damage *modifiers* are pulled later, per `DealDamageAction` ④); (2) **consume the activation** — `attacksUsedThisTurn++`; (3) **break Stealth** if the attacker has it — an own-moment of *attacking*: clear the Stealth keyword and emit `StealthBrokenEvent` (attacking is what drops Stealth; merely being targeted/dealing non-attack damage does not — closes the Stealth half of hole #4); (4) emit `AttackPerformedEvent { attackerId, targetId }` (the post-interception **actual** target); (5) **enqueue two independent `DealDamageAction`s** — the strike (attacker → target, amount = the snapshotted attack) and, iff the defender's attack > 0, the retaliation (defender → attacker) — processed **sequentially, not atomically** (§3). **Freeze interaction:** a frozen attacker never reaches ④ (rejected at §4 ③ `AttackerFrozen`); conversely the `attacksUsedThisTurn` consumed in step 2 feeds the end-of-turn unfreeze sweep (Turn Lifecycle step 3) — a minion frozen **this turn while exhausted** (it had already swung) **stays** frozen through its next turn, one frozen while it **still had an attack thaws** at the end of this turn, so Freeze costs exactly one attack. |
 | `ActivateArtifactAction` | playerId, artifactId, targetId? — activate an **active** artifact (replaces `UseHeroPowerAction`, 2026-06-11). ③: own turn; artifact owned; activatable (`baseActivationCost != null`, else `ArtifactNotActive`); **pulled effective cost** ≤ `mana` (the definition's cost formula — the starter's = `base + usesThisTurn`); target ∈ the definition's selector. ④: pay the pulled cost, `usesThisTurn++`, enqueue the definition's activation effects, consume `durability` if activation is a declared consumer (`ArtifactDurabilityLostEvent`; at 0 → enqueue `DestroyArtifactAction`), emit `ArtifactActivatedEvent`. **Unlimited per turn** (no budget field — cost/durability limit it); does **not** increment `cardsPlayedThisTurn` (not a card play; Combo unaffected); declared at ③′ like any action (interceptable). |
 | `DiscardArtifactAction` | playerId, artifactId — the owner's in-turn right to free a slot: own turn, **free**, unlimited per turn. Unregisters the artifact's triggers/auras, snapshots it to the owner's graveyard (`GraveyardArtifact`), emits `ArtifactDiscardedEvent` — and **only** that (never `ArtifactDestroyedEvent`; the voluntary/involuntary split is two disjoint event types, not a `cause` field — the session-7 idiom). |
 | `EndTurnAction` | playerId |
@@ -300,13 +295,12 @@ All actions carry a nullable `SourcePlayerId` (null = system-issued) and a `Requ
 
 | Action | Key fields |
 |---|---|
-| `DrawCardAction` | playerId, sourceId? — single-card draw. ④ handler, three branches: **(a)** deck non-empty, hand has room → move the top card to hand, emit `CardDrawnEvent`; **(b)** deck non-empty, hand full → burn it, emit `HandOverflowEvent`; **(c)** **deck empty → FATIGUE**: `fatigueCounter++`, emit `FatigueDamageEvent { amount = fatigueCounter }`, then enqueue `DealDamageAction { target = the player's hero, amount = fatigueCounter, sourceId = null }`. Fatigue is **sourceless** (null) even when an effect forced the draw, and carries **no special damage path** — routing through the one damage channel means it inherits ④ modifier precedence (so a future `PlayerState.armor` absorbs it automatically — hero-combat pass), interception/⑥′ windows, and the hero → `HeroMortallyWoundedEvent` → ⑧ settle path (deck-out loss, incl. mutual-deckout draw, falls out for free). Empty-deck and full-hand are mutually exclusive per draw (no card drawn ⇒ nothing to burn). A multi-card "draw N" effect enqueues N `DrawCardAction`s, so each empty-deck one ticks fatigue once. |
+| `DrawCardAction` | playerId, sourceId? — single-card draw. ④ handler, three branches: **(a)** deck non-empty, hand has room → move the top card to hand, emit `CardDrawnEvent`; **(b)** deck non-empty, hand full → burn it, emit `HandOverflowEvent`; **(c)** **deck empty → FATIGUE**: `fatigueCounter++`, emit `FatigueDamageEvent { amount = fatigueCounter }`, then enqueue `DealDamageAction { target = the player's hero, amount = fatigueCounter, sourceId = null }`. Fatigue is **sourceless** (null) even when an effect forced the draw, and carries **no special damage path** — routing through the one damage channel means it inherits ④ modifier precedence (so `PlayerState.armor` absorbs it automatically — the hero absorb slot), interception/⑥′ windows, and the hero → `HeroMortallyWoundedEvent` → ⑧ settle path (deck-out loss, incl. mutual-deckout draw, falls out for free). Empty-deck and full-hand are mutually exclusive per draw (no card drawn ⇒ nothing to burn). A multi-card "draw N" effect enqueues N `DrawCardAction`s, so each empty-deck one ticks fatigue once. |
 | `DealDamageAction` | target: `entityId` **or** `ITargetSelector` (AoE — evaluated at ④ over the current board), amount, sourceId — **the one channel for all damage, combat included** (see §3 "Reactive…"). A selector-carrying instance is a single declared action → a single ③′ interception window. **Combat = two independent instances** (attacker strike + defender retaliation), each separately declared and processed sequentially — *not* one atomic unit (§3, 2026-06-06) |
 | `HealAction` | targetId, amount, sourceId |
 | `DestroyMinionAction` | minionId, sourceId? |
 | `SummonMinionAction` | definitionKey, ownerId?, boardPosition, sourceId? |
-| `EquipWeaponAction` | playerId, definitionKey, sourceId? |
-| `DestroyWeaponAction` | playerId, sourceId? |
+| `GainArmorAction` | playerId, amount, sourceId? — the sole `armor` gain path (no cap): `armor += amount`, emit `ArmorGainedEvent`. Armor is *consumed* inside the `DealDamageAction` ④ handler (the precedence's hero absorb slot), never by this action |
 | `EquipArtifactAction` | playerId, definitionKey, sourceId? — the one equip path: playing an Artifact **card** enqueues it, and effects (battlecries etc.) enqueue the same action. A **player play** onto a full row (3) rejects at ③ (`ArtifactSlotsFull` — discard first, the BoardFull analogue); an **effect-enqueued** equip onto a full row **fizzles** at ④ re-validation (the full-board-summon pattern). Handler: append to `artifacts[]`, register the definition's triggers/auras (zone-entry, `birthEpoch` stamped — §3), emit `ArtifactEquippedEvent`. **Match setup** equips each player's starter artifact via this action. |
 | `DestroyArtifactAction` | artifactId, sourceId? — system/effect destruction + the durability-exhaustion path: unregister triggers/auras, snapshot → owner's graveyard (`GraveyardArtifact`), emit `ArtifactDestroyedEvent` (never `ArtifactDiscardedEvent`). |
 | `ModifyArtifactChargesAction` | artifactId, delta, sourceId — the sole `charges` mutation path → `ArtifactChargesChangedEvent`. (The dual-artifact example: passive trigger "a neutral minion dies" enqueues `+1`; active "deal `charges` damage to target", durability 3 consumed by activation.) |
@@ -319,7 +313,7 @@ All actions carry a nullable `SourcePlayerId` (null = system-issued) and a `Requ
 | `UnInvertTargetAction` | targetId, sourceId? |
 | `BuffMinionAction` | minionId, attackDelta, healthDelta, sourceId |
 | `SilenceMinionAction` | minionId, sourceId? |
-| `FreezeTargetAction` | targetId, sourceId? — sets `isFrozen = true` and stamps `frozenOnTurn = turn.number` on the target; emits `MinionFrozenEvent`. Thawing is the end-of-turn unfreeze sweep (Turn Lifecycle step 3), never here. (Freezing a **hero** needs the same `isFrozen`/`frozenOnTurn` pair on `PlayerState` — deferred with the hero-combat pass; see Unaddressed Features.) |
+| `FreezeTargetAction` | targetId (a **minionId** — heroes cannot be frozen: heroes never attack (2026-06-11), so freeze has nothing to deny them), sourceId? — sets `isFrozen = true` and stamps `frozenOnTurn = turn.number` on the target; emits `MinionFrozenEvent`. Thawing is the end-of-turn unfreeze sweep (Turn Lifecycle step 3), never here. |
 | `ModifyManaAction` | playerId, delta, sourceId? |
 | `ShuffleDeckAction` | playerId, sourceId? |
 | `DiscardCardAction` | playerId, cardId? (null = random), sourceId? |
@@ -379,7 +373,7 @@ All events carry an `eventId: long` (append-order sequence number, unique per se
 |---|---|
 | `AttackDeclaredEvent` | attackerId, targetId — the combat-specific **declaration**, published at `AttackAction` **③′** (the *intended*, pre-interception target): renderer telegraph + the typed hook for "when this attacks" interception (e.g. a redirect). May still fizzle/retarget before ④. |
 | `AttackPerformedEvent` | attackerId, targetId — the **committed** swing, emitted at `AttackAction` **④** (the post-interception *actual* target). Announces the activation-consumed delta (`attacksUsedThisTurn++`) and is the natural anchor for a future "after this attacks" trigger. The swing's **damage is not here** — it lands via the two enqueued `DealDamageAction`s' own `DamageTakenEvent`s. **Replaces the removed `AttackResolvedEvent`**, which bundled both hit amounts into a single delta — impossible under two-action combat, where neither hit has landed at ④ and a card may interleave between them. |
-| `DamageTakenEvent` | targetId, amount, overkill, sourceId |
+| `DamageTakenEvent` | targetId, amount, armorAbsorbed, overkill, sourceId — `armorAbsorbed` = the portion eaten by hero `armor` at the ④ absorb slot (always 0 for minion targets / unarmored heroes); health loss = `amount − armorAbsorbed`. A **field**, not a separate armor-loss event — same idiom as `overkill` (one occurrence, split delta), distinct from the disjoint-event idiom (discard vs destroy), which is for *different occurrences* |
 | `HealedEvent` | targetId, amount, sourceId |
 
 **Status / Keywords:**
@@ -402,9 +396,7 @@ All events carry an `eventId: long` (append-order sequence number, unique per se
 |---|---|
 | `ManaChangedEvent` | playerId, mana, maxMana |
 | `HeroMortallyWoundedEvent` | playerId, sourceId — fires the instant a hero crosses to ≤0 health (from any damage — combat, spell, fatigue, self-damage), **before** the ⑧ win-check finalizes the loss; the hero analogue of `MinionMortallyWoundedEvent`, distinct from `GameEndedEvent` (the ⑧ finalization). The hook for save-the-hero reactions (heal-above-0 / immune in response to lethal — e.g. an Ice-Block-style effect realised as a post-reaction rather than damage prevention; for prevention see "Interception", §3). **No `cause` discriminator:** it was informational only (no card branches on it; save-from-lethal fires regardless of cause) and nothing in the engine populated it. Fatigue is identified by the `FatigueDamageEvent` that immediately precedes its `DealDamageAction`; other causes are reconstructable from the source/preceding events. Dropped rather than fed by a damage-cause taxonomy (YAGNI). |
-| `WeaponEquippedEvent` | playerId, weapon |
-| `WeaponDestroyedEvent` | playerId, weapon |
-| `WeaponDurabilityLostEvent` | playerId, remainingDurability |
+| `ArmorGainedEvent` | playerId, amount — armor *loss* is not a separate event: absorption rides `DamageTakenEvent.armorAbsorbed` |
 
 **Artifacts** (replace the HeroPower events, 2026-06-11):
 
@@ -412,7 +404,7 @@ All events carry an `eventId: long` (append-order sequence number, unique per se
 |---|---|
 | `ArtifactEquippedEvent` | playerId, artifact |
 | `ArtifactActivatedEvent` | playerId, artifactId, targetId? — the activation delta and the subscription point for `OnArtifactActivated` triggers (the renamed Inspire; no separate `InspireTriggeredEvent`-style marker — the activation event itself is the hook) |
-| `ArtifactDurabilityLostEvent` | artifactId, remainingDurability — parallels `WeaponDurabilityLostEvent`; the `remaining: 0` tick immediately precedes the enqueued `DestroyArtifactAction` |
+| `ArtifactDurabilityLostEvent` | artifactId, remainingDurability — the `remaining: 0` tick immediately precedes the enqueued `DestroyArtifactAction` |
 | `ArtifactChargesChangedEvent` | artifactId, newCharges, delta |
 | `ArtifactDiscardedEvent` | playerId, artifactId — **voluntary** removal only (owner's in-turn discard). Disjoint from `ArtifactDestroyedEvent` — never both; "leaves play for any reason" subscribes to both |
 | `ArtifactDestroyedEvent` | playerId, artifact (snapshot) — **involuntary** removal: durability exhaustion or a destroy effect |
@@ -562,7 +554,7 @@ foreach (var kw in EffectiveKeywords(source).OfType<IOnDealtDamage>())
     kw.OnDealtDamage(source, target, amount, state, queue);
 ```
 
-Further "own-moment" hook points (on-take-damage, on-attack, …) are added as new role interfaces when a card first needs one; each is invoked the same way by its owning handler. **Freeze** is not a keyword hook — it is a status: `FreezeTargetAction` sets `isFrozen = true` and stamps `frozenOnTurn = turn.number` (`MinionFrozenEvent`), and a frozen character cannot attack (§4 ③ `AttackerFrozen`). It thaws in the **end-of-turn unfreeze sweep** (§4 Turn Lifecycle step 3), which thaws the ending player's frozen characters **unless** the freeze landed *this* turn while the character was already exhausted — so Freeze costs **exactly one attack**: a character frozen with an attack still available misses that turn and thaws at its end, while one frozen *after* it has swung (e.g. into a retaliation-freezer) stays frozen through its next turn.
+Further "own-moment" hook points (on-take-damage, on-attack, …) are added as new role interfaces when a card first needs one; each is invoked the same way by its owning handler. **Freeze** is not a keyword hook — it is a status: `FreezeTargetAction` sets `isFrozen = true` and stamps `frozenOnTurn = turn.number` (`MinionFrozenEvent`), and a frozen minion cannot attack (§4 ③ `AttackerFrozen`). It thaws in the **end-of-turn unfreeze sweep** (§4 Turn Lifecycle step 3), which thaws the ending player's frozen minions **unless** the freeze landed *this* turn while the minion was already exhausted — so Freeze costs **exactly one attack**: a minion frozen with an attack still available misses that turn and thaws at its end, while one frozen *after* it has swung (e.g. into a retaliation-freezer) stays frozen through its next turn. Freeze is **minion-only**: heroes never attack (2026-06-11), so a hero has no attack for freeze to deny — there is no hero frozen state.
 
 ### `IEffect`
 
@@ -584,7 +576,7 @@ Every action carries a `sourceId`, and `EffectContext` is built from the **actio
 
 - A played card's effects (including Battlecry) → `sourceId` = the card.
 - A minion's triggered effects (Deathrattle, On-Damage, …) → `sourceId` = that minion. A trigger's `OnFire` stamps `sourceId = its host entity`; it does **not** pass along the source of the action that fired the trigger.
-- Artifact / weapon effects → that artifact / weapon.
+- Artifact effects → that artifact.
 - `sourcePlayerId` = the source's controller, captured at enqueue time (from the death snapshot if the source is already dead).
 
 So if Yeti's Deathrattle damages a minion, the damage's `sourceId` is **Yeti**, not the spell that killed Yeti. This determines friendly/enemy evaluation (Item 2 conditions), the Lifesteal heal target, and which entity "dealt" the damage for any watching trigger.
@@ -652,7 +644,7 @@ Genuinely **controller/turn-context** conditions are a *different* axis and stay
 | Condition | Matches when |
 |---|---|
 | `MinionTypeIs(definitionKey)` | the event's relevant minion has that `definitionKey`. (Tribe-based matching — "any Beast" — depends on Item 8 tribes, not yet in the model; this matches a *specific* minion definition.) |
-| `CardTypeIs(CardType)` | the event's relevant card is a Minion / Spell / Weapon / Artifact — e.g. "whenever you play a Spell **or** a Weapon" |
+| `CardTypeIs(CardType)` | the event's relevant card is a Minion / Spell / Artifact — e.g. "whenever you play a Spell **or** an Artifact" |
 | `CostAtLeast(n)` / `CostAtMost(n)` | the event's relevant card's `effectiveCost` meets the threshold — e.g. "whenever you cast a 2-mana-or-higher spell" |
 
 **Combinators** compose conditions into a tree:
@@ -755,7 +747,7 @@ All of this obeys the existing invariants unchanged: registration happens inside
 
 - grant Divine Shield to the defender → on resume the shield (a keyword pull at the damage moment) absorbs the hit;
 - grant Poisonous to the defender → its resumed counter-damage destroys the attacker;
-- gain armor / a standing damage modifier → read at the damage moment, no action edit (note: hero `armor` itself is not yet in the §1 model — deferred to the hero-combat pass; see Unaddressed Features, "Hero armor");
+- gain armor / a standing damage modifier → read at the damage moment, no action edit (`PlayerState.armor`, §1; consumed at the ④ hero absorb slot);
 - destroy / return / silence the attacker, or summon a **Taunt** token → on resume the held action **re-validates and either fizzles or is forced to the Taunt** by the ordinary rules.
 
 Only **two** manipulations cannot be expressed as board-state mutation, and they are the *entire* irreducible surface — not a vocabulary:
@@ -769,7 +761,7 @@ Only **two** manipulations cannot be expressed as board-state mutation, and they
 
 - **All damage flows through `DealDamageAction`, combat included.** `AttackAction` *enqueues* `DealDamageAction`s for the two combatants rather than applying damage inline, so the predamage declaration covers **every** source — Ice Block / redirect / prevention stops combat damage too, not just spells. **Combat is two independent damage actions, not one atomic unit (decided 2026-06-06).** The attacker's strike and the defender's retaliation are each first-class actions — each with its own ③′ declaration and its own ⑥′ window — processed **strictly sequentially** through the queue. This is the §4 ⑥′ rule applied verbatim ("one window per action; two instances = two windows"); an atomic single-window combat would be an *exception* to that rule, so it was rejected. Consequences: **(a)** interception/reaction windows are **per recipient** — the natural granularity, since Ice Block / Divine Shield protect one entity, not "a combat" — and a held card may interleave **between** the two hits (e.g. bounce the defender to dodge its retaliation); **(b)** a same-combat reaction sees **per-hit** board state (the defender's "when damaged" reaction fires *before* the retaliation lands) — a deliberate, narrow divergence from HS's apply-both-then-react; **(c)** **base attack is snapshotted at `AttackAction` ④** (HS-style attack lock), while damage *modifiers* are pulled at each damage action's ④ (precedence below). Because death is deferred to ⑦, **both combatants are mortally-wounded-but-on-board until the queue drains, so they die in one shared wave**, and a lethal-but-not-removed defender **still deals its retaliation with full effect** (keywords + source-side modifiers pulled live). This makes **dying-swing retaliation** — Poisonous/Lifesteal on a dying defender, or "retaliation doubled while mortally wounded" — a supported mechanic *by construction*, not special machinery.
 - **AoE damage is one declaration.** An auto-hit AoE is a *single* selector-carrying `DealDamageAction` (§3 `ITargetSelector`), so it raises **one** ③′ window with the targets as its selector — the pre-damage twin of post-reaction batching (one window for 7 minions), differing only in that it fires **immediately, before the hits** (pre-damage cannot defer to the settle). Per-target protection inside it is a grant (immune / Divine Shield) read at ④, not a new op.
-- **④ damage-modifier precedence (pinned).** After ③′ interception, the handler computes each target's effective amount in a fixed order: **(1)** base `amount` (spell-damage bonus already baked at enqueue, §3 `IEffect`); **(2)** multiplicative modifiers (double-damage); **(3)** flat reductions, floored at 0; **(4)** caps; **(5)** **immune** → 0, stop (no shield break, no health loss); **(6)** **Divine Shield** → if still > 0, break it (`DivineShieldBrokenEvent`) and set 0; **(7)** apply to `currentHealth`, compute overkill, emit `DamageTakenEvent`, and if `≤ 0` emit `MinionMortallyWoundedEvent` (hero → `HeroMortallyWoundedEvent`). Only the baked spell-damage bonus (1) and Divine Shield / events (6–7) exist in v1; steps 2–4 are the slots future modifiers drop into, in this order, so stacking stays deterministic and replayable.
+- **④ damage-modifier precedence (pinned).** After ③′ interception, the handler computes each target's effective amount in a fixed order: **(1)** base `amount` (spell-damage bonus already baked at enqueue, §3 `IEffect`); **(2)** multiplicative modifiers (double-damage); **(3)** flat reductions, floored at 0; **(4)** caps; **(5)** **immune** → 0, stop (no shield break, no armor loss, no health loss); **(6)** the **absorb slot, by target type** — *minion*: **Divine Shield** → if still > 0, break it (`DivineShieldBrokenEvent`) and set 0; *hero*: **armor** → `absorbed = min(armor, amount)`, `armor −= absorbed`, `amount −= absorbed` (reported as `DamageTakenEvent.armorAbsorbed`, §2B — partial absorption lets the remainder through, unlike the all-or-nothing Shield); **(7)** apply the remainder to `currentHealth`/`health`, compute overkill, emit `DamageTakenEvent`, and if `≤ 0` emit `MinionMortallyWoundedEvent` (hero → `HeroMortallyWoundedEvent`). Only the baked spell-damage bonus (1) and the absorb slot / events (6–7) exist in v1; steps 2–4 are the slots future modifiers drop into, in this order, so stacking stays deterministic and replayable.
 
 **Visibility — the responder's side (pinned 2026-06-10; queued topic #4).** One **information ceiling**: a window prompt never widens the responder's visibility — it shows exactly **their own candidates** (their hand, plus engine-computed legal targets per card — §1 `InterventionCandidate`) **+ the cause**, where the cause is either public-by-nature or already on their wire:
 
@@ -1039,7 +1031,7 @@ The `EndTurnAction` handler and subsequent system actions implement the full tur
 
 1. Publish `TurnEndedEvent`
 2. Fire End-of-Turn triggers (current player L→R, then opponent L→R) — **neutral minions are intentionally excluded** (turn-scoped; a neutral minion has no turn of its own — see §3 `IEventBus`)
-3. **Unfreeze sweep — for the player whose turn is ENDING** (before the swap, so the freeze actually costs an attack rather than thawing at the start of the controller's turn): thaw each frozen character they control **unless** it was frozen *this* turn while exhausted — i.e. keep frozen iff `frozenOnTurn == turn.number && attacksUsedThisTurn >= budget` (the same exhaustion test as `AttackerExhausted`, §4 ③); otherwise set `isFrozen = false`, clear `frozenOnTurn`, emit `MinionThawedEvent`. This makes Freeze cost exactly one attack (a character frozen after swinging stays frozen through its next turn; one frozen on the opponent's turn, or this turn before swinging, thaws at the end of the turn it was unable to act).
+3. **Unfreeze sweep — for the player whose turn is ENDING** (before the swap, so the freeze actually costs an attack rather than thawing at the start of the controller's turn): thaw each frozen minion they control **unless** it was frozen *this* turn while exhausted — i.e. keep frozen iff `frozenOnTurn == turn.number && attacksUsedThisTurn >= budget` (the same exhaustion test as `AttackerExhausted`, §4 ③); otherwise set `isFrozen = false`, clear `frozenOnTurn`, emit `MinionThawedEvent`. This makes Freeze cost exactly one attack (a minion frozen after swinging stays frozen through its next turn; one frozen on the opponent's turn, or this turn before swinging, thaws at the end of the turn it was unable to act). Minions only — heroes have no frozen state (§1).
 4. **Mana refresh — for the player whose turn is ENDING** (moved from turn-start to turn-**end**, 2026-06-09): increment *their* `maxMana` (cap 10) and restore *their* `mana` to `maxMana`. Refreshing here pre-loads the full pool the player then carries **through the opponent's turn**, so an off-turn **intervention** spends straight from `mana` (the ordinary `effectiveCost ≤ mana` check) and the player's own next turn simply begins with whatever interventions didn't consume — **no `reservedMana` field, no separate ceiling**; the affordability ceiling is naturally their *full ramped* next-turn pool. (The game's first turn has no preceding turn-end, so game setup seeds each player's turn-1 `mana`/`maxMana` directly. A future overload-style "less mana next turn" effect would apply its reduction here.)
 5. Swap active player
 6. Clear `summoningSick` (wake) and reset `attacksUsedThisTurn` on all of the new active player's minions
@@ -1114,18 +1106,6 @@ The §4 ⑦ Phase-1 graveyard-routing rule reads exactly two inputs — `bornNeu
 - **Cost to enable:** an **owner-of-record** on the minion (the controller it should grieve back to when it dies neutral) — a new nullable field plus a routing branch. Intentionally **not** added now: there is no field to populate and no card to populate it, so adding it would be speculative.
 - **Status:** open by design. Whoever introduces a player→neutral path owns defining this branch.
 
-### Freezing a hero
+### Hero combat (RESOLVED 2026-06-11 — concept dropped)
 
-`FreezeTargetAction` can target a **hero**, but only minion freeze is modelled — `isFrozen`/`frozenOnTurn` live on `MinionOnBoard`, not `PlayerState`.
-
-- **Why deferred:** a hero attacks via its weapon, and the **hero-combat path itself is only lightly specced** (weapon swing, `heroAttack`, durability) — bolting hero-freeze on now would leave half-wired state. The thaw **rule** is identical to a minion's; what's missing is the storage and wiring.
-- **Cost to enable:** add `heroIsFrozen`/`heroFrozenOnTurn` to `PlayerState`, have §4 ③ read the character-appropriate `isFrozen` when the attacker is a hero, fold heroes into the step-3 unfreeze sweep, and add hero freeze/thaw events (`HeroFrozenEvent`/`HeroThawedEvent`).
-- **Status:** do it as part of the hero-combat pass; the freeze-thaw rule is already complete and applies unchanged.
-
-### Hero armor
-
-Armor appears as an interception effect (§3 — "gain armor") and as a hero-damage absorber (e.g. a secret "before the hero takes damage, add 8 armor"), but it is **not in the §1 data model**: `PlayerState` has `health` but **no `armor`**, and there is no `GainArmorAction`.
-
-- **Why deferred (2026-06-09):** armor is part of hero defense, which rides the lightly-specced hero-combat path; adding it in isolation would leave its absorption slot in the §4 ④ damage-modifier precedence unpinned.
-- **Cost to enable:** add `PlayerState.armor: int` + a `GainArmorAction` (and `ArmorGainedEvent`); pin armor's slot in the §4 ④ precedence (absorbs *after* flat reductions/caps, *before* health loss; Divine Shield is the minion analogue and stays separate); pre-damage interceptions that "add armor" then absorb at the damage moment exactly as the §3 example describes.
-- **Status:** do it as part of the hero-combat pass. The intervention/secret mechanics that *consume* armor — a pre-damage hero secret absorbing a reflected hit (worked through 2026-06-09) — already resolve correctly once the field exists; only the storage and the precedence slot are missing.
+The former "Freezing a hero" and "Hero armor" entries lived here. Both closed by the hero-kit decision (2026-06-11): **heroes never attack** — no `heroAttack`, no weapons (the `Weapon` card type is gone), no hero frozen state (freeze has nothing to deny a hero — `FreezeTargetAction` is minion-only); the hero's kit is the **artifact row** (§1). Hero **armor** was kept and landed: `PlayerState.armor`, `GainArmorAction`/`ArmorGainedEvent`, and the §4 ④ absorb slot (`DamageTakenEvent.armorAbsorbed`). Heroes remain attackable *defenders* and never retaliate — structurally, since retaliation is gated on the defender's attack (> 0) and a hero has none.
