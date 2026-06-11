@@ -173,7 +173,9 @@ GraveyardArtifact : GraveyardEntry
 TurnState           — activePlayerId: string, number: int
 TimerState          — secondsRemaining: int
 PendingChoice       — waitingPlayerId: string, choiceType: ChoiceType, options: ChoiceOption[],
-                       context: JsonElement  // stores effect continuation
+                       context: JsonElement  // stores effect continuation. Chained choices = a continuation issuing the next
+                                             // StartChoiceAction — the future v2 card-crafting flow rides this unchanged
+                                             // (see notes/2026-06-11-card-crafting-v2.md; v1 builds NOTHING for it)
 PendingIntervention — respondingPlayerId: string, heldAction: GameAction?, candidates: InterventionCandidate[],
                        timeoutSeconds: int
                        // SET-VALUED window (2026-06-09): candidates = the responder's matching + affordable
