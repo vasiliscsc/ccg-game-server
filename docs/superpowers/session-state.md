@@ -183,7 +183,11 @@ Resumed at the re-posed `heroAttack` question (temporary-vs-persistent). **The u
 - **Part-1 lock now structural:** hero defenders never retaliate because retaliation is gated on defender attack > 0 and heroes have none. Heroes stay ordinary attack *targets*.
 - Both Unaddressed-Features entries (hero freeze / hero armor) replaced by one RESOLVED record. Spec re-grepped clean (no stale `weapon`/`heroAttack`/`frozen character`/`hero-combat` outside intentional decision notes). §1 mirror block re-synced (provenance updated). Full record + Plan impact: borrow-list note **"Hero-combat pass" Part 2**.
 
-**HERO-COMBAT PASS CLOSED. Every pre-implementation design thread is now resolved.** The single remaining task before implementation is the **end-of-pass plan reconciliation** (all `Plan impact:` lists → epic/ticket files; weapon-scope deletion + artifact re-scope; stale-name sweeps) → then **Epic 01 / T1.1**.
+**HERO-COMBAT PASS CLOSED.** (Commit `8b46ddf`.)
+
+**Session 9 part 2 (same day): deferral scan → SIGILS — the unified reactive-card model (DECIDED + APPLIED).** User asked for a sweep of deferred-but-never-done items; the scan found: (1) the **secret bundle** (biggest), (2) **card crafting** (locked scope, zero spec presence, recorded nowhere), (3) R2 stat-math + marked-for-destruction scope, (4) tracked items (Modifier System, bots, temp control…), (5) a stale §3 tribe note masking a missing `HasTribe` condition. User picked (1) and **reframed past my secret-vs-intervention forks entirely**: secrets and interventions are ONE family — a reactive card (**sigil**) deployable two ways, **invoked** from hand (window, choice) or **inscribed** face-down (auto on first match). Zone = mode selector; the zone-scoped hosting model already supported it with zero new machinery. **Vocabulary (user's):** sigil / invoke / invocation / inscribe / inscription / `PlayerState.inscriptions`. **User-locked:** universal inscribability — choice-ful sigils degrade choices to RANDOM when inscribed (target requirements consume as the existing random-K-at-④ selector mode; replaced my choice-free-guard); one-per-definitionKey, cap 3; **actor-attribution firing rule** (replaced both own-turn options after the user's "opponent invokes on my turn" probe — an inscription never fires on its owner's own actions; attribution via submitter/source-controller; neutral springs both; windows never change `activePlayerId`). Flagged rulings: pay-on-inscribe, one-shot → graveyard, empty-pool guard (stays inscribed), inscribed+held independence, dispatch slot after owner's artifacts, identity hidden/existence public (directed `SigilInscribedEvent` + thin `InscriptionAddedEvent` replace `CardPlayedEvent`; `SigilRevealedEvent` at fire), redacted ③′ declaration for inscribe plays. **This closes the whole point-D deferred bundle** — §3 "Still deferred" is now just the marked-for-destruction scope. Full record + Plan impact: borrow-list note **"Sigils"**; spec §3 new "Sigils" subsection.
+
+**Remaining pre-implementation work:** the **end-of-pass plan reconciliation** (all `Plan impact:` lists → epic/ticket files; weapon-scope deletion + artifact re-scope + sigil additions; stale-name sweeps) → then **Epic 01 / T1.1**. From the deferral scan, still genuinely open/undecided: **card crafting** (locked scope, never specced — decide or cut before reconciliation), the stale tribe-condition note (`HasTribe` — five-minute fix), R2 inversion stat-math + marked-for-destruction scope (deferred-by-design, have homes).
 
 ### ⏹ SESSION STOP (2026-06-09, end of session 7)
 
@@ -346,7 +350,7 @@ Battlecry, Deathrattle, Start of Turn, End of Turn, Aura (continuous), On Damage
 All require a `PendingChoice` game phase.
 
 ### Intervention system
-When an opponent declares an action, the other player gets a **single-response window** (play one card / skip) before the action resolves. Exact trigger conditions TBD in Game Server spec. Requires `PendingIntervention` game phase.
+When an opponent declares an action, the other player gets a **single-response window** (play one card / skip) before the action resolves. Exact trigger conditions TBD in Game Server spec. Requires `PendingIntervention` game phase. *(Long since superseded in detail: set-valued looping windows (session 6), visibility (session 8), and the **sigil** unification (session 9, 2026-06-11) — reactive cards are sigils, **invoked** from hand or **inscribed** face-down as auto-firing inscriptions; see spec §3 "Sigils".)*
 
 ### Neutral zone
 - Third board zone between the two player boards — neither player owns it
@@ -369,7 +373,7 @@ When an opponent declares an action, the other player gets a **single-response w
 
 ## Approved data model (Section 1)
 
-> **Provenance (synced 2026-06-09):** this block is a convenience mirror of spec §1 (`specs/2026-05-26-game-mechanics.md`). The **spec is authoritative** — on any conflict, the spec wins. Re-synced through end of session 6 (`a9cdb97`): field renames `cardId`→`definitionKey`, `canAttack`→`summoningSick`, dropped `attacksAllowedThisTurn`; added neutral-zone/origin/3-field tribe+keyword/freeze/reborn fields; `GraveyardEntry.originalCard` removed; `PendingIntervention` set-valued; turn-end mana refresh; **session 7** added `PlayerState.fatigueCounter` + dropped `cause` from the two mortally-wounded events; **session 9 (2026-06-11)** dropped the hero-weapon concept (`heroAttack`, `weapon`, `WeaponOnHero`, `GraveyardWeapon`, Weapon card type all REMOVED — heroes never attack) and added `PlayerState.armor`. Comments trimmed vs. spec; read the spec for full rationale.
+> **Provenance (synced 2026-06-09):** this block is a convenience mirror of spec §1 (`specs/2026-05-26-game-mechanics.md`). The **spec is authoritative** — on any conflict, the spec wins. Re-synced through end of session 6 (`a9cdb97`): field renames `cardId`→`definitionKey`, `canAttack`→`summoningSick`, dropped `attacksAllowedThisTurn`; added neutral-zone/origin/3-field tribe+keyword/freeze/reborn fields; `GraveyardEntry.originalCard` removed; `PendingIntervention` set-valued; turn-end mana refresh; **session 7** added `PlayerState.fatigueCounter` + dropped `cause` from the two mortally-wounded events; **session 9 (2026-06-11)** dropped the hero-weapon concept (`heroAttack`, `weapon`, `WeaponOnHero`, `GraveyardWeapon`, Weapon card type all REMOVED — heroes never attack), added `PlayerState.armor`, and added `PlayerState.inscriptions` (the sigil model). Comments trimmed vs. spec; read the spec for full rationale.
 
 ### GameState
 ```
@@ -407,7 +411,8 @@ deck: Card[]
 board: MinionOnBoard[]        // player's own side only
 graveyard: GraveyardEntry[]   // unified — minions + spells + artifacts
 artifacts: ArtifactOnBoard[]  // artifact row, cap 3 incl. the starter (hero-power REPLACEMENT, 2026-06-11); heroPower/heroPowerUsedThisTurn REMOVED
-cardsPlayedThisTurn: int      // Combo tracking
+inscriptions: Card[]          // INSCRIBED sigils (§3 Sigils, 2026-06-11): reactive cards pre-armed face-down; cap 3, one per definitionKey; identity hidden (directed/public sigil events); hand → inscriptions → graveyard on reveal
+cardsPlayedThisTurn: int      // Combo tracking (inscribing counts as a card play)
 fatigueCounter: int           // empty-deck-draw counter; init 0, never resets; ++ then deal the new value to this hero (1,2,3,…) — §2A DrawCardAction
 ```
 
@@ -457,7 +462,7 @@ effectiveCost: int            // max(0, baseManaCost + Σmodifiers.costDelta)
 definition: JsonElement       // has "normal" and "inverted" sections
 handlerKey?: string
 isInverted: bool              // intrinsic state; preserved across all minion↔card transitions
-// REACTIVE TRIGGERS: in a trigger-hosting zone, ICardHandler registers reactive ITrigger(s), live by zone, dropped on play/discard/return — HAND → player-choice intervention; SECRET zone → auto-resolve. (Most cards have none.)
+// REACTIVE TRIGGERS: a card carrying one is a SIGIL (§3 Sigils) — same trigger, zone decides: HAND → may be INVOKED (player-choice window); INSCRIPTIONS zone → auto-resolves (choices degrade to random). Every sigil supports both deployments. (Most cards have none.)
 ```
 
 ### StatModifier (unified — used on both Card and MinionOnBoard)
