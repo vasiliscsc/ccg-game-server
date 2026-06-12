@@ -950,6 +950,43 @@ The last deliberately-deferred design question in the spec (point-D leftover). R
 
 **With this, the spec has ZERO open design questions.** Every item is decided, recorded, or explicitly re-scoped to v2 (crafting). Pre-implementation work remaining: plan reconciliation only.
 
+## Spec-review fix pass (session 10, 2026-06-12→13 — ⚠ IN PROGRESS; decisions below are LOCKED but **NO spec edits applied yet**)
+
+Walking `notes/2026-06-12-spec-review-findings.md` finding-by-finding (user chose to review every item, fork or not; Q&A batches of ≤4). Status: **#1–#10b decided, #18 + new #34 decided, #10c presented-awaiting-answer, #11–#17/#19–#33 not yet walked.** Apply-and-commit happens per batch once #10c closes section A.
+
+**Decided (mechanical, as recommended):**
+- **#1** drop "is alive" from §4 ③ target-validity — aliveness policy lives entirely in the declared selector (`All…/Alive…/Dead…`); attacker-aliveness check unchanged.
+- **#2** draw/give events split directed-full + public-thin (`CardDrawnEvent`/`CardAddedToHandEvent`: owner sees the card, opponent sees "drew a card"); `HandOverflowEvent` burned card + `CardDiscardedEvent` stay public (HS reveals both).
+- **#3** Poisonous = destroys **any minion it damages** (heroes excepted) — relational scope removed (lane model made "enemy" wrong for neutrals).
+- **#4** Lifesteal from an unowned (neutral) source = explicit **no-op**.
+- **#6** `isDamaged` **DELETED** — pull `currentHealth < maxHealth` at the read points (Enrage ⑥ recompute, damaged-target conditions); continues the stored-verdict purge (`canAttack`, `attacksAllowedThisTurn`).
+- **#7** §4 ⑤ publish-order text gains the inscriptions slot (minions → artifacts → inscriptions), matching §3 `IEventBus` + the Ordering table.
+- **#9** `IAura.SourceMinionId` → **`SourceEntityId`** + zone-entry registration wording (artifact hosts implement the literal contract).
+- **#10a** `SpellDamageBonus`: "cannot leak into combat or **artifact-activation** damage".
+- **#10b** `ITriggerCondition.sourceId` host list = "the hosting **minion, artifact, or sigil — in hand or inscribed**" (user correction: I'd missed inscriptions).
+
+**#5 — `AttackDeclaredEvent` → BUS-ONLY (discussed, revised from my carve-out recommendation).** Treated exactly like `ActionDeclaredEvent`: the typed ③′ "when this attacks" hook, excluded from persisted log + wire. The "Bus ⊋ log / log = state-delta stream" invariant survives unchanged; no third visibility class. Renderer coverage verified: no-window → `AttackPerformedEvent` (④, committed) anchors animation with no perceivable gap; window → directed `InterventionPromptEvent` (held action verbatim) + the public window event (which now carries the cause, below). Spectator attack-arrow during a window rides the window-cause.
+
+**#34 — NEW finding (user-found, the session's headliner): cancel was a FREE NO-OP — cost timing finally pinned via a two-action split.** User probe ("counterspelled fireball must still go to graveyard") exposed: payment + zone move lived in `PlayCardAction` ④; an interception cancel drops the action *before* ④ ⇒ no mana paid, card back in hand, **zero deltas** — Counterspell strictly worthless (actor re-submits the identical play), and the whole drama invisible to spectators + event-log replay. This was the long-deferred session-3 "cost timing" question with teeth. **✅ DECISION — option B, the two-action split (keeps mutations ④-only; user asked exactly where commitment mutates and rejected a pre-③′ mutation point):**
+- `PlayCardAction` ④ = **commitment**: pay mana, card leaves hand, `cardsPlayedThisTurn++`, emit `CardPlayedEvent` + `ManaChangedEvent`, **enqueue `ResolveCardAction { cardId, definitionKey, playerId, targetId? }`** — the idiom `AttackAction` (enqueues damage) and `ActivateArtifactAction` (pays at ④, enqueues effects) already use; card plays were the odd one out.
+- `ResolveCardAction` = ordinary queue citizen: **its ③′ is the counterspell window** (held action = the resolution); ④ runs effects (spell effects; minion summon + Battlecry — Battlecry moves one level deeper, still synchronous-in-pipeline); cancel/illegal-on-resume → **fizzle**: `CardPlayFizzledEvent {playerId, cardId}`, effects never run, **never refunds**.
+- **Dissolves two patches made earlier the same session:** the resume's cost-gate-skip (held resolution has no cost) and the trace "action record written at commitment" rule (PlayCardAction traces as a normal completed ④).
+- **Two counter-semantics now expressible by construction:** cancel at `PlayCardAction` ③′ = "prevent the cast" (nothing sunk, card stays in hand); cancel at `ResolveCardAction` ③′ = true Counterspell (costs sunk, card spent). Trigger condition picks. The pending `ResolveCardAction` *is* the MTG "spell on the stack" — no new zone; the queue is the zone.
+- **Graveyard entries:** spell → written at the play's ④ (in graveyard during the window, both outcomes — user's pick); minion card → entry **on fizzle only** (resolved → the body's eventual `GraveyardMinion`; avoids double entries for one body).
+- Riders: an **invocation** emits a plain `CardPlayedEvent` (inscribe redaction is inscribe-only); a fizzled **attack** stays eventless (no cost committed; inferable from `WindowClosed` + no `AttackPerformedEvent`); uniform-commitment for artifacts is moot — they already pay at ④ and enqueue effects.
+
+**Window-cause (rider to #5/#34):** public `InterventionWindowOpenedEvent` gains the **cause** (held action verbatim at ③′ / `causeEventIds[]` at ⑥′; inscribe-redaction carve-out applies). Session-8 already ruled ③′ causes public-by-nature; the thin form hides the *responder's* candidates, and the cause is the *actor's*. Closes the spectator/replay gap for canceled no-delta actions.
+
+**#18 — pulled forward (the deathrattle example forced it): ✅ enqueue-and-drain.** ⑦-enqueued deathrattle/reborn actions are ordinary queue citizens with the FULL pipeline (①–⑥ incl. ③′ + ⑥′) — what ⑨'s text already said; ⑦ Phase-2's "④–⑥ run for each" wording is the drift to fix. New mortal wounds defer to the next wave (already pinned), making deathrattle saves coherent; ⑧ still fires only at full settle.
+
+**#8 — trace worked example: replace + extend.** Old example used nonexistent vocabulary (`MinionDamagedEvent`→`DamageTakenEvent`+real fields incl. `overkill`; `attacker/defender/src/tgt`→§2A names; **no `DeathrattleAction`** — a deathrattle traces as its effect's ordinary actions tagged `src`, + `DeathrattleTriggeredEvent` in the settle record; `isDamaged` diff entry dies with #6). Spec gets **both session-10 verified scenarios** (full four-stream audits done in-session: bus = log + declarations only; log = pure deltas; wires = log filtered by directedness; event-log + command-log replays both complete): (a) Fireball countered — commitment deltas → window(cause) → invocation → fizzle; (b) intercepted deathrattle — settle enqueues `DealDamageAction(src=dead minion)` → ③′ window → cancel. Adjust (a) to the B-shape (E1/E2 at `PlayCardAction` ④; held = `ResolveCardAction`).
+
+**Trace schema additions:** new **`fizzle` record kind** `{action, reason: Canceled|Illegal(code), events}` — distinct from `reject`, which stays zero-event. (The commitment-write rule was adopted then dissolved by #34-B.)
+
+**#10c — OPEN, presented verbose-with-example, awaiting answer:** `StatModifier.sourceId` documented as entity ref but the inversion memento writes the string `"inversion"`; sole lookup-by-source consumer = re-invert finding the memento; namespaced ids (`m3`/`c12`/`a2`/`p1`) make collision impossible. Options: **(1) document the sentinel** (one doc line + "second tag ⇒ revisit as kind field" tripwire — recommended, Item-10/cause-drop disposition), (2) `kind: CardEffect|SystemMemento` field, (3) typed union. **Resume here.**
+
+**Plan impact (accumulating; fold into reconciliation):** `ResolveCardAction` = new §2A action → card-play epic ticket re-scope (commit/resolve split; Battlecry placement) + validator + engine pipeline tickets; #2 directed-split → events/wire epic; #6 `isDamaged` removal → data-model + Enrage tickets; #18 → death-wave ticket ("full pipeline for wave-enqueued actions"); trace epic ticket gains `fizzle` kind + both worked examples; #5/window-cause → events epic (`AttackDeclaredEvent` bus-only; `InterventionWindowOpenedEvent.cause`); tests: cancel-eats-card+mana, identical-resubmit impossible, pre-cast vs post-cast cancel distinction, deathrattle interception, countered-minion-card graveyard entry.
+
 ## Topics deliberately omitted
 
 These came up in the investigation but don't merit changes:

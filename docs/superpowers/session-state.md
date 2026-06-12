@@ -199,6 +199,26 @@ Resumed at the re-posed `heroAttack` question (temporary-vs-persistent). **The u
 
 **THE SPEC HAS ZERO OPEN DESIGN QUESTIONS** (the review found *execution* defects + holes, not unsettled design forks — except where flagged). Everything is decided, recorded, or explicitly v2 (crafting). **The only remaining pre-implementation work is the end-of-pass plan reconciliation** (all `Plan impact:` lists → epic/ticket files; weapon-scope deletion + artifact re-scope + sigil additions + the library-seam constraint + `HasTribe` + `InvertTargetAction` + `DestroyMinionAction` semantics; stale-name sweeps) → then **Epic 01 / T1.1**.
 
+### ⏹ SESSION STOP (2026-06-13, end of session 10 — spanned 06-12 → 06-13)
+
+**State:** Session 10 = the **SPEC-REVIEW FIX PASS, part 1** — walking all 33 findings one by one (user's call: every item, fork or not, Q&A batches). **Decisions are LOCKED for #1–#10b, #18, and a NEW #34, but ⚠ NO SPEC EDITS HAVE BEEN APPLIED YET** — the full decision record (with reasoning + Plan-impact accumulator) is the borrow-list note's new section **"Spec-review fix pass (session 10)"**. Read that section before resuming; this block is the pointer + resume plan only.
+
+**Decided this session (headlines):**
+- Mechanical accepts: **#1** (③ aliveness → selector-carried), **#2** (draw-event directed/thin split), **#3** (Poisonous any-side), **#4** (Lifesteal neutral no-op), **#6** (`isDamaged` DELETED), **#7** (⑤ + inscriptions), **#9** (`SourceEntityId`), **#10a** (artifact-activation wording), **#10b** (host list incl. **inscriptions** — user correction).
+- **#5**: `AttackDeclaredEvent` → **bus-only** (revised from carve-out after grounding; renderer covered by `AttackPerformedEvent` + window events).
+- **#34 (NEW, user-found via the fireball/counterspell probe — the session's headliner):** cancel was a free no-op (no mana, card kept, zero deltas, Counterspell worthless, replay-invisible). **Resolution = two-action split:** `PlayCardAction` ④ commits (pay/leave-hand/count/`CardPlayedEvent`) + enqueues **`ResolveCardAction`**; interception targets the resolution; fizzle → `CardPlayFizzledEvent`, never refunds; mutations stay ④-only; dissolves the cost-gate-skip + commitment-trace patches; pre-cast vs post-cast cancel both expressible. Spell graveyard at play-④; minion-card entry on fizzle only.
+- **Window-cause rider:** `InterventionWindowOpenedEvent` gains the cause (③′ held-action verbatim / ⑥′ `causeEventIds[]`; inscribe-redaction carve-out).
+- **#18 (pulled forward):** enqueue-and-drain — wave-enqueued actions get the full pipeline incl. ③′/⑥′; fix ⑦ Phase-2 wording.
+- **#8:** trace example replaced + extended with BOTH verified four-stream scenarios (fireball-countered, deathrattle-intercepted); **trace schema** gains the `fizzle` record kind.
+
+**Methodology notes (carry forward):** (1) The user's "describe the fireball scenario across bus/log/wires and verify it adds up" probe found #34 — walking concrete renderability scenarios is a power tool; do it proactively for stream-touching decisions. (2) **Deliverable-visibility lesson saved to memory** (`feedback-deliverable-visibility`): twice I produced the requested walkthrough but buried it ahead of an AskUserQuestion dialog and the user never saw it — requested artifacts go in a plain reply as the centerpiece, question cadence resumes next turn. (3) User again reframed past my fork (pipeline-purity question → option B), and corrected my #10b host list.
+
+**▶ RESUME POINT:**
+1. **#10c first** — presented verbose-with-example, awaiting the user's pick: sentinel-documented (recommended) / `kind` field / typed union.
+2. **Then APPLY batch 1 to the spec** (everything in the borrow-list section: #1–#10c, #18, #34+`ResolveCardAction`, window-cause, trace examples+`fizzle` kind) — re-grep for stale text (`isDamaged`, `SourceMinionId`, "damaged enemy minion", "hero-power damage", old trace vocabulary, ③ "is alive", ⑦ "④–⑥"), **commit per the established rhythm**.
+3. **Then continue the walk at #11** (match setup — first of the H holes) through #33, skipping #18 (done); the session-9 stop block below still carries the per-finding mechanical-vs-fork split + recommendations for #11–#33.
+4. Then: borrow-list Plan-impact lines are already accumulating in the new section → end-of-pass **plan reconciliation** → **Epic 01 / T1.1**.
+
 ### ⏹ SESSION STOP (2026-06-12, end of session 9 — spanned 06-11 → 06-12)
 
 **State:** ALL session-9 work committed + pushed to `origin/main` — working tree clean. Commit trail (chronological):
