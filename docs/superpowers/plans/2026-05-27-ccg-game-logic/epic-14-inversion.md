@@ -1,5 +1,7 @@
 # Epic 14 — Inversion Mechanic
 
+> ⛔ **DEFERRED TO V2 (2026-06-14).** Inversion is parked as a v2 mechanic and builds **nothing** in v1 — no `isInverted` field, no `InvertTargetAction`/`UnInvertTargetAction`, no `Minion/CardInvertedEvent`, no On-Invert trigger, no `normal`/`inverted` definition split (v1 card definitions are flat). The spec (`2026-05-26-game-mechanics.md`) carries no inversion surface. The full v2 design — option-3 stat-math, the open enchantment-flip question, and the keyword offense↔defense pairing work — lives in `notes/2026-06-14-inversion-v2.md`. The death-cadence dying-window is **unaffected** (R1 heal-to-save still justifies it). This epic file is retained as the v2 implementation seed; the tickets below are NOT in the v1 build order.
+
 **Goal:** The signature custom mechanic. A card or minion can be **Inverted**: stats flip (Attack ↔ Health) and its trigger type can change (e.g. Battlecry → Deathrattle) using the `normal`/`inverted` sections of the card definition. Reversible, applies in hand and on board, and fires an On-Invert trigger.
 
 **Depends on:** Epic 08 (triggers/handlers/definitions), Epic 04 (minions, computed stats), Epic 02 (cards in hand).

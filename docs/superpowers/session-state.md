@@ -199,6 +199,25 @@ Resumed at the re-posed `heroAttack` question (temporary-vs-persistent). **The u
 
 **THE SPEC HAS ZERO OPEN DESIGN QUESTIONS** (the review found *execution* defects + holes, not unsettled design forks — except where flagged). Everything is decided, recorded, or explicitly v2 (crafting). **The only remaining pre-implementation work is the end-of-pass plan reconciliation** (all `Plan impact:` lists → epic/ticket files; weapon-scope deletion + artifact re-scope + sigil additions + the library-seam constraint + `HasTribe` + `InvertTargetAction` + `DestroyMinionAction` semantics; stale-name sweeps) → then **Epic 01 / T1.1**.
 
+### ⏹ SESSION STOP (2026-06-14, end of session 11)
+
+**State:** Session 11 resumed the spec-review fix pass at the open #10c micro-fork. Exploring it (a stat-math walk: a `1/6` minion buffed +3 atk → `4/6`, damaged 4 → `4/2`, then inverted → **`2/4`**) surfaced the unresolved **enchantment-flip-on-invert** question, and the user pivoted to the broader call: **PARK THE ENTIRE INVERSION MECHANIC AS A V2 FEATURE.** DECIDED + APPLIED (uncommitted at time of writing — commit pending). Inversion was the deepest, most-ramifying item and the only one with no HS reference.
+
+**What was done (all applied):**
+- **Spec** (`2026-05-26-game-mechanics.md`) — every inversion surface removed: §1 `MinionOnBoard.isInverted`, `Card.isInverted`, the `definition` **`normal`/`inverted` split (v1 definitions are now FLAT)**, `GraveyardMinion`/`GraveyardSpell` `isInverted`; §2A `InvertTargetAction` + `UnInvertTargetAction` + the `DestroyMinionAction` inversion clause; §2B `MinionInvertedEvent` + `CardInvertedEvent`; §3 `ITrigger` "On Invert" type; Identity retain-table row + replay line. Dying-window save examples reworded "invert"→"heal". **grep-verified clean** (zero `invert`/`isInverted` in the spec).
+- **Plan** — Epic 14 marked ⛔ deferred-to-v2 (file retained as the v2 seed); refs scrubbed from Epic 03, Epic 16 (incl. the `isInverted`-preserved bounce test), README (row + ticket list strikethrough).
+- **v2 seed created:** `notes/2026-06-14-inversion-v2.md` — captures option-3 stat-math (full), the **OPEN** enchantment-flip question (flip-deltas vs persist-label = first v2 question), and the keyword **offense↔defense** pairing work (4 native pairs: Divine Shield↔Poisonous, Enrage↔Lifesteal — both *systemically* consistent with the stat-swap — Reborn↔Windfury, Taunt↔Charge; Stealth/Spell-Damage need invented anti-keywords; involution constraint noted).
+- **Records:** borrow-list note — R2 stat-math section + #10c marked SUPERSEDED/MOOT, new "Inversion parked to V2" entry; session-10 fix-pass status updated; findings doc — #30 (`CardInvertedEvent`) marked ⛔ MOOT, HS-differences inversion bullet annotated; session-state data-model mirror re-synced (isInverted removed).
+
+**Key consequences:**
+- **#10c is dissolved** (its `sourceId:"inversion"` memento no longer exists) → **fix-pass batch 1 is UNBLOCKED.**
+- **Death-cadence UNAFFECTED** — R1 (heal a mortally-wounded minion above 0 in the dying window) still justifies the cascade-settle window without R2.
+
+**▶ RESUME POINT:**
+1. **Apply fix-pass batch 1 to the spec** — #1–#10b + #18 + #34 (`ResolveCardAction` split, window-cause, trace `fizzle` kind + both worked examples). The full locked decisions are in the borrow-list "Spec-review fix pass (session 10)" section. **#10c needs no edit.** Re-grep for stale text (`isDamaged`, `SourceMinionId`, old trace vocab, ③ "is alive", ⑦ "④–⑥"); commit per rhythm.
+2. **Continue the walk at #11** (match setup) → #33. **Now-moot/changed by the inversion parking:** **#30 fully moot** (skip); **#14** drops its inversion-memento sub-question (rest stands); **#15** drops its `isInverted`-across-transform sub-question (rest stands). The session-9 stop block carries the per-finding mechanical-vs-fork split for #11–#33.
+3. Then end-of-pass **plan reconciliation** (backlog + the inversion-parking edits already applied) → **Epic 01 / T1.1**.
+
 ### ⏹ SESSION STOP (2026-06-13, end of session 10 — spanned 06-12 → 06-13)
 
 **State:** Session 10 = the **SPEC-REVIEW FIX PASS, part 1** — walking all 33 findings one by one (user's call: every item, fork or not, Q&A batches). **Decisions are LOCKED for #1–#10b, #18, and a NEW #34, but ⚠ NO SPEC EDITS HAVE BEEN APPLIED YET** — the full decision record (with reasoning + Plan-impact accumulator) is the borrow-list note's new section **"Spec-review fix pass (session 10)"**. Read that section before resuming; this block is the pointer + resume plan only.
@@ -385,7 +404,7 @@ Taunt, Divine Shield, Charge, Rush, Lifesteal, Windfury, Poisonous, Stealth, Spe
 ### Trigger types (all selected, system must be extensible)
 Battlecry, Deathrattle, Start of Turn, End of Turn, Aura (continuous), On Damage Taken, On Friendly Minion Death, On Spell Cast, On Artifact Activated (renamed from Inspire, 2026-06-11), Combo, On Invert — plus any future triggers added via new `ITrigger` implementations.
 
-### Inversion mechanic
+### Inversion mechanic ⛔ DEFERRED TO V2 (parked 2026-06-14 — see `notes/2026-06-14-inversion-v2.md`; builds nothing in v1)
 - A card or minion can be in **Normal** or **Inverted** state
 - Stats flip: Attack ↔ Health when inverted
 - Trigger type can change: e.g. Battlecry → Deathrattle when inverted
@@ -488,7 +507,6 @@ intrinsicTribes: Tribe        // from card at summon; immutable; survives Silenc
 grantedTribes: Tribe          // permanent tribe grants; Silence clears to Tribe.None
 auraTribes: Tribe             // recomputed each aura pass; never persisted
 effectiveTribes: Tribe        // = intrinsicTribes | grantedTribes | auraTribes; all engine tribe checks use this
-isInverted: bool
 summoningSick: bool           // raw fact (replaced derived `canAttack`): entered a board this turn, not yet woken. Set by BOTH summon and control; cleared by turn-start sweep. Attack eligibility (incl. Charge-any / Rush-minions-only) PULLED from effective keywords at §4 ③
 attacksUsedThisTurn: int      // raw counter; reset at turn-start. ONLY stored attack-state — per-turn BUDGET is PULLED at §4 ③ (Windfury→2 else 1), never a field (can't desync from keyword). Not consulted for a commanded neutral
 summonOrder: int              // monotonic per session; trigger fire-order disambiguation
@@ -511,9 +529,8 @@ baseAttack?, baseHealth?: int // Minion only
 modifiers: StatModifier[]     // in-hand cost/stat changes; attack/healthDelta migrate to enchantments on play
 grantedKeywords: string[]     // carried from a RetainEnchantments bounce/shuffle; migrate to the new minion's grantedKeywords on play; not part of base definition
 effectiveCost: int            // max(0, baseManaCost + Σmodifiers.costDelta)
-definition: JsonElement       // has "normal" and "inverted" sections
+definition: JsonElement       // the card's definition body (flat — inversion's normal/inverted split is v2)
 handlerKey?: string
-isInverted: bool              // intrinsic state; preserved across all minion↔card transitions
 // REACTIVE TRIGGERS: a card carrying one is a SIGIL (§3 Sigils) — same trigger, zone decides: HAND → may be INVOKED (player-choice window); INSCRIPTIONS zone → auto-resolves (choices degrade to random). Every sigil supports both deployments. (Most cards have none.)
 ```
 
@@ -534,12 +551,11 @@ GraveyardEntry (abstract)
   // subtype keeps its own ENTITY snapshot, the single source of truth the fabrication reads.
 
 GraveyardMinion : GraveyardEntry
-  snapshot: MinionOnBoard   // full death state; carries definitionKey + isInverted → card fully derivable
+  snapshot: MinionOnBoard   // full death state; carries definitionKey → card fully derivable
   diedOnTurn: int
 
 GraveyardSpell : GraveyardEntry
-  definitionKey: string     // a spell has no board snapshot → stores its own identity
-  isInverted: bool          // → card fabricated from these on recast
+  definitionKey: string     // a spell has no board snapshot → stores its own identity → card fabricated from this on recast
 
 GraveyardArtifact : GraveyardEntry
   artifactState: ArtifactOnBoard // full snapshot; both DISCARD and DESTROY land here (2026-06-11)

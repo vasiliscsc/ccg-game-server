@@ -48,7 +48,7 @@ CCG.GameLogic.Tests/      # xUnit scenario tests
 | 11 | [Spell Damage, Combo & Synergies](epic-11-synergies.md) | ✅ written | T11.1–T11.3 |
 | 12 | [Mulligan & Choices](epic-12-mulligan-choices.md) | ✅ written | T12.1–T12.6 |
 | 13 | [Intervention System](epic-13-intervention.md) | ✅ written | T13.1–T13.3 |
-| 14 | [Inversion Mechanic](epic-14-inversion.md) | ✅ written | T14.1–T14.4 |
+| 14 | [Inversion Mechanic](epic-14-inversion.md) | ⛔ deferred to v2 | — (parked 2026-06-14; see `notes/2026-06-14-inversion-v2.md`) |
 | 15 | [Neutral Zone](epic-15-neutral-zone.md) | ✅ written | T15.1–T15.4 |
 | 16 | [Remaining Effects](epic-16-remaining-effects.md) | ✅ written | T16.1–T16.6 |
 
@@ -159,11 +159,12 @@ This captures the intended breakdown for *every* epic, so the structure survives
 - **T13.2** `SubmitInterventionAction` (play card → process card then held action) + `InterventionPlayedEvent`
 - **T13.3** Skip / timeout path + `InterventionWindowClosedEvent`
 
-### Epic 14 — Inversion Mechanic
-- **T14.1** Invert/UnInvert on minions + stat flip (attack↔health) + `MinionInvertedEvent`
-- **T14.2** Inversion on cards in hand + `CardInvertedEvent`
-- **T14.3** Trigger-type change on inversion (definition `normal`/`inverted` sections)
-- **T14.4** On Invert trigger
+### Epic 14 — Inversion Mechanic ⛔ DEFERRED TO V2 (parked 2026-06-14)
+Builds nothing in v1; full v2 design seed in `notes/2026-06-14-inversion-v2.md` + the retained `epic-14-inversion.md`.
+- ~~**T14.1** Invert/UnInvert on minions + stat flip~~ (v2)
+- ~~**T14.2** Inversion on cards in hand~~ (v2)
+- ~~**T14.3** Trigger-type change on inversion~~ (v2)
+- ~~**T14.4** On Invert trigger~~ (v2)
 
 ### Epic 15 — Neutral Zone
 - **T15.1** `NeutralZoneConfig` + `neutralZone` + `SpawnNeutralMinionAction` + `NeutralMinionSpawnedEvent`

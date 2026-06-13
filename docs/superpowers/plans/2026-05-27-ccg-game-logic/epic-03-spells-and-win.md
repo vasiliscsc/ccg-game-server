@@ -14,7 +14,7 @@
 
 **Files (modify):** `State/Card.cs` (add `string? HandlerKey`, `JsonElement Definition` — `System.Text.Json` — for effect data; add `EffectiveCost` computed from `BaseManaCost` for now). **Create:** `Actions/PlayCardAction.cs` (`{ required string PlayerId; required string CardId; string? TargetId }`).
 
-**Scope out:** `modifiers`/`StatModifier` (Epic 16), inversion fields (Epic 14).
+**Scope out:** `modifiers`/`StatModifier` (Epic 16). (Inversion is deferred to v2 — no inversion fields exist; Epic 14.)
 
 **Notes:** `Definition` is a `JsonElement` holding effect descriptors (e.g. `{ "effects": [ { "type": "damage", "amount": 1, "target": "chosen" } ] }`). The interpreter is `DefaultCardHandler` (Epic 08) — but for this epic, wire a **minimal inline effect resolution** in `PlayCardHandler` good enough for a damage spell, and refactor to `DefaultCardHandler` in Epic 08. Note the seam explicitly.
 
