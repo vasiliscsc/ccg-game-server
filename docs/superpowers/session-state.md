@@ -213,10 +213,11 @@ Resumed at the re-posed `heroAttack` question (temporary-vs-persistent). **The u
 - **#10c is dissolved** (its `sourceId:"inversion"` memento no longer exists) → **fix-pass batch 1 is UNBLOCKED.**
 - **Death-cadence UNAFFECTED** — R1 (heal a mortally-wounded minion above 0 in the dying window) still justifies the cascade-settle window without R2.
 
-**▶ RESUME POINT:**
-1. **Apply fix-pass batch 1 to the spec** — #1–#10b + #18 + #34 (`ResolveCardAction` split, window-cause, trace `fizzle` kind + both worked examples). The full locked decisions are in the borrow-list "Spec-review fix pass (session 10)" section. **#10c needs no edit.** Re-grep for stale text (`isDamaged`, `SourceMinionId`, old trace vocab, ③ "is alive", ⑦ "④–⑥"); commit per rhythm.
-2. **Continue the walk at #11** (match setup) → #33. **Now-moot/changed by the inversion parking:** **#30 fully moot** (skip); **#14** drops its inversion-memento sub-question (rest stands); **#15** drops its `isInverted`-across-transform sub-question (rest stands). The session-9 stop block carries the per-finding mechanical-vs-fork split for #11–#33.
-3. Then end-of-pass **plan reconciliation** (backlog + the inversion-parking edits already applied) → **Epic 01 / T1.1**.
+**Update (later in session 11, 2026-06-14): FIX-PASS BATCH 1 ✅ APPLIED + committed.** All of #1–#10b + #18 + #34 landed in the spec (grep-verified clean); full edit list in the borrow-list "Spec-review fix pass (session 10–11)" section. Headliner #34: `PlayCardAction` ④ rewritten to author the normal-play **commit** branch + new **`ResolveCardAction`** row (counterspell window at its ③′) + `CardPlayFizzledEvent` + window-cause on `InterventionWindowOpenedEvent` + 3-block trace rewrite with the new `fizzle` record kind.
+
+**▶ RESUME POINT (batch 1 done):**
+1. **Continue the walk at #11** (match setup) → #33. **Now-moot/changed by the inversion parking:** **#30 fully moot** (skip); **#14** drops its inversion-memento sub-question (rest stands); **#15** drops its `isInverted`-across-transform sub-question (rest stands). The session-9 stop block below carries the per-finding mechanical-vs-fork split + recommendations for #11–#33. Apply in batches + commit per rhythm (same as batch 1).
+2. Then end-of-pass **plan reconciliation** (backlog + the inversion-parking + batch-1 edits already applied) → **Epic 01 / T1.1**.
 
 ### ⏹ SESSION STOP (2026-06-13, end of session 10 — spanned 06-12 → 06-13)
 
