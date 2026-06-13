@@ -201,7 +201,7 @@ Resumed at the re-posed `heroAttack` question (temporary-vs-persistent). **The u
 
 ### ⏹ SESSION STOP (2026-06-14, end of session 11)
 
-**State:** Session 11 resumed the spec-review fix pass at the open #10c micro-fork. Exploring it (a stat-math walk: a `1/6` minion buffed +3 atk → `4/6`, damaged 4 → `4/2`, then inverted → **`2/4`**) surfaced the unresolved **enchantment-flip-on-invert** question, and the user pivoted to the broader call: **PARK THE ENTIRE INVERSION MECHANIC AS A V2 FEATURE.** DECIDED + APPLIED (uncommitted at time of writing — commit pending). Inversion was the deepest, most-ramifying item and the only one with no HS reference.
+**State:** Session 11 did **two** things — (A) **parked the entire inversion mechanic as a V2 feature**, and (B) **applied fix-pass batch 1** to the spec. Both DECIDED + APPLIED + committed + pushed; **working tree clean.** It resumed at the open #10c micro-fork; exploring it (a stat-math walk: a `1/6` minion buffed +3 atk → `4/6`, damaged 4 → `4/2`, then inverted → **`2/4`**) surfaced the unresolved **enchantment-flip-on-invert** question, and the user pivoted to the broader call to park inversion (the deepest, most-ramifying item and the only one with no HS reference). Parking dissolved #10c, which unblocked batch 1, applied next.
 
 **What was done (all applied):**
 - **Spec** (`2026-05-26-game-mechanics.md`) — every inversion surface removed: §1 `MinionOnBoard.isInverted`, `Card.isInverted`, the `definition` **`normal`/`inverted` split (v1 definitions are now FLAT)**, `GraveyardMinion`/`GraveyardSpell` `isInverted`; §2A `InvertTargetAction` + `UnInvertTargetAction` + the `DestroyMinionAction` inversion clause; §2B `MinionInvertedEvent` + `CardInvertedEvent`; §3 `ITrigger` "On Invert" type; Identity retain-table row + replay line. Dying-window save examples reworded "invert"→"heal". **grep-verified clean** (zero `invert`/`isInverted` in the spec).
@@ -215,8 +215,13 @@ Resumed at the re-posed `heroAttack` question (temporary-vs-persistent). **The u
 
 **Update (later in session 11, 2026-06-14): FIX-PASS BATCH 1 ✅ APPLIED + committed.** All of #1–#10b + #18 + #34 landed in the spec (grep-verified clean); full edit list in the borrow-list "Spec-review fix pass (session 10–11)" section. Headliner #34: `PlayCardAction` ④ rewritten to author the normal-play **commit** branch + new **`ResolveCardAction`** row (counterspell window at its ③′) + `CardPlayFizzledEvent` + window-cause on `InterventionWindowOpenedEvent` + 3-block trace rewrite with the new `fizzle` record kind.
 
+**Commit trail (session 11, all pushed to `origin/main`, tree clean):**
+- `57f2fa8` — park inversion entirely as a v2 mechanic (spec + plan scrub; `notes/2026-06-14-inversion-v2.md` seed)
+- `375d40d` — spec-review fix-pass batch 1 (#1–#10b, #18, #34)
+- `<this commit>` — session-11 stop block finalize
+
 **▶ RESUME POINT (batch 1 done):**
-1. **Continue the walk at #11** (match setup) → #33. **Now-moot/changed by the inversion parking:** **#30 fully moot** (skip); **#14** drops its inversion-memento sub-question (rest stands); **#15** drops its `isInverted`-across-transform sub-question (rest stands). The session-9 stop block below carries the per-finding mechanical-vs-fork split + recommendations for #11–#33. Apply in batches + commit per rhythm (same as batch 1).
+1. **Continue the walk at #11** (match setup) → #33. **Now-moot/changed by the inversion parking:** **#30 fully moot** (skip); **#14** drops its inversion-memento sub-question (rest stands); **#15** drops its `isInverted`-across-transform sub-question (rest stands). The session-9 stop block below carries the per-finding mechanical-vs-fork split + recommendations for #11–#33. **Several #11–#33 items are pure game-design number/policy choices needing the user** (e.g. #11 starting health/hand sizes/mulligan, #20 Reborn HP, #21 full-hand bounce/give policy, #24 choice-timeout) — present trade-off + recommend per [[feedback-design-fork-style]], don't apply unilaterally. Apply mechanical fixes in batches + commit per rhythm (same as batch 1).
 2. Then end-of-pass **plan reconciliation** (backlog + the inversion-parking + batch-1 edits already applied) → **Epic 01 / T1.1**.
 
 ### ⏹ SESSION STOP (2026-06-13, end of session 10 — spanned 06-12 → 06-13)
