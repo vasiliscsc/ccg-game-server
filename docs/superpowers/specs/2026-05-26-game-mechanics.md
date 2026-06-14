@@ -87,7 +87,7 @@ baseAttack, baseHealth: int   // immutable, from card definition
 enchantments: StatModifier[]  // permanent buffs; Silence clears all
 auraAttackBonus, auraHealthBonus: int  // recalculated each aura pass; never stored in enchantments
 attack: int                   // = baseAttack + Σenchantments.attackDelta + auraAttackBonus
-maxHealth: int                // = baseHealth + Σenchantments.healthDelta + auraHealthBonus
+maxHealth: int                // = baseHealth + Σenchantments.healthDelta + auraHealthBonus. **currentHealth follows maxHealth changes (#13, HS-exact):** when maxHealth RISES by Δ (a health buff/enchant or aura grant), currentHealth += Δ (the missing-health gap is preserved); when it FALLS (buff/aura removal, Silence), currentHealth = min(currentHealth, newMaxHealth) — clamp down, existing damage persists, NO minimum (maxHealth ≤ 0 ⇒ mortally wounded — the aura-loss-death path). Unified: newCurrent = min(currentHealth + max(0, Δmax), newMax). Applied wherever maxHealth changes — BuffMinionAction ④, SilenceMinionAction ④ (strips enchants), the ⑥ aura recompute (Δ vs the previous pass). Damage/heal move currentHealth directly, never maxHealth.
 currentHealth: int            // takes damage; healed up to maxHealth. ≤0 (or destroy-marked) ⇒ pending death: the minion stays ON the board — still targetable, countable, and keyword-active — until the next death-wave settle (§4 ⑦), not removed on the spot (amendment B). The two doom kinds differ in SAVABILITY (2026-06-12): ≤0 health = "mortally wounded" (fires MinionMortallyWoundedEvent, savable — heal before the settle); destroy-marked = FINAL (no event, no save; only preventable at the destroy action's ③′ declaration — §2A DestroyMinionAction)
 keywords: string[]            // maintained EFFECTIVE view = intrinsicKeywords ∪ grantedKeywords ∪ auraKeywords; resolved to IKeyword at runtime; what the engine queries. (Keyword analog of effectiveTribes.)
 intrinsicKeywords: string[]   // from the card definition, seeded at summon; Silence clears
@@ -241,11 +241,12 @@ Art, display description, and sound cues are **not** part of `CCG.GameLogic`. Th
 
 ### Card and Minion Identity
 
-Cards and minions are independent entities with independent ID allocators. They are linked only by a shared `definitionKey` (string — e.g. `"river_crocolisk"`, `"boar"`) into the card-definition library.
+Cards and minions are independent entities with independent **but type-prefix-disjoint** ID allocators — so a bare instance id is globally unambiguous and the engine reads entity type from the id's prefix (§2A). They are linked only by a shared `definitionKey` (string — e.g. `"river_crocolisk"`, `"boar"`) into the card-definition library.
 
 **Identity rules:**
 
 - `Card.id` and `MinionOnBoard.minionId` are allocated from two distinct counters; **IDs are never reused** within a session.
+- **ID format — type-prefixed, per-session monotonic, never reused:** minions `m0, m1, …`; cards `c0, c1, …`; artifacts `a0, a1, …`. **Neutral minions share the `m` allocator** — *every* minion (player-owned or neutral) has an `m`-id; neutrality is `ownerId == null`, **not** a separate id space, and the id is **stable across `TakeControlAction`** (control flips `ownerId`, never the id). The two **heroes/players** are the fixed seats **`p1` and `p2`** (= `GameState.player1`/`player2`): a hero **is** its player (its stats live on `PlayerState`), addressed by its `playerId`, with **no separate hero-entity id**. `playerId` is a **match-local seat**, never an external/account id — the Game Server maps account ↔ seat. `ownerId` ∈ {`p1`, `p2`, `null`} is the owner *field* (null = the neutral lane), not an entity id. The type-prefixes keep all instance ids globally disjoint, so the uniform `entityId` target field (§2A) resolves by id alone.
 - The `definitionKey` field on `Card` and on `MinionOnBoard` points into the static card-definition library. It is the only cross-entity link.
 - Playing a Card to summon a Minion does **not** transfer the Card's `id` to the minion. The Card leaves play (to graveyard or fabricated-elsewhere); the Minion is a new entity with a fresh `minionId`.
 - Tokens (minions summoned by effects with no originating card) have a `minionId` and a `definitionKey`. There is no `Card.id` associated with them while on the board.
@@ -293,7 +294,7 @@ Actions are immutable commands (input layer). Events are immutable facts (output
 
 ### 2A. GameAction types
 
-All actions carry a nullable `SourcePlayerId` (null = system-issued) and a `RequestedAt` timestamp. The engine infers entity type (minion vs hero vs card) from the ID at processing time — actions do not carry type discriminators.
+All actions carry a nullable `SourcePlayerId` (null = system-issued) and a `RequestedAt` timestamp. The engine infers entity type (minion vs hero vs card vs artifact) from the ID's **type-prefix** at processing time (`m*` minion, `c*` card, `a*` artifact, `p1`/`p2` hero — §1 "Card and Minion Identity") — actions do not carry type discriminators. A **hero** `targetId` is simply its `playerId` (the seat `p1`/`p2`); there is no separate hero id.
 
 **ID convention:** a `cardId` / `minionId` / `targetId` field names an **existing instance** in a zone (a `Card.id`, a `MinionOnBoard.minionId`, …); a `definitionKey` field names a **library key to fabricate or summon from**, where no instance exists yet (summoning a token, generating a card into hand, equipping an artifact, transforming). The two are never interchangeable — see "Card and Minion Identity" (§1).
 
@@ -330,7 +331,7 @@ All actions carry a nullable `SourcePlayerId` (null = system-issued) and a `Requ
 | `TransformMinionAction` | minionId, newDefinitionKey, sourceId? |
 | `TakeControlAction` | minionId, newOwnerId, boardPosition?, sourceId? — **CONTROL** (permanent): re-homes the minion onto `newOwnerId`'s board and sets `ownerId`. The card's `ITargetSelector` defines legal `minionId` (neutral-only = `AllNeutralMinions`, enemy-only = `AllEnemyMinions`, either = `Union(...)`; no new selectors). Handler: reject `BoardFull` if the destination is full; else set `ownerId`, move zones, mark the minion **summoning-sick** (`summoningSick = true`) — whether it may act this turn is the ordinary pulled eligibility (Charge → any target, Rush → minions only) at §4 ③, *not* decided here — **re-bucket** its existing trigger subscriptions under the new owner (the bus orders firing by each host's owner vs. the active player, so however it tracks ownership it must now reflect `newOwnerId`) — this is **not** a re-run of `OnSummon`: triggers are neither re-created nor re-fired, and their `birthEpoch` is **preserved** (a moved entity, not a new one) — aura-recalc, emit `MinionControlChangedEvent`. The minion is now non-neutral and dies to `newOwnerId`'s graveyard. |
 | `CommandAttackAction` | attackerId (a neutral), targetId, sourceId — **COMMAND** (one-shot, no zone change): a card-granted single attack *activation* by a neutral minion. Effect-issued. Re-validates at §4 ③ with the **relaxed attacker rule** (a neutral may attack only via this action; never via player `AttackAction`); legal `targetId` = anything a controlled minion could attack (opponent characters incl. hero, or another neutral) under the same **per-lane Taunt** rule. Honors the attacker's keywords: a **Windfury** neutral makes **two** strikes at the one target, **sequenced independently** — the second re-validates, so a mortal wound from the first retaliation fizzles it (§4 ③ aliveness). Ignores `attacksUsedThisTurn` and bypasses summoning-sickness entirely (neutrals are never `summoningSick`) — command is a card-granted activation, not the minion's own budget. Desugars into the same combat `DealDamageAction` pair(s) as `AttackAction`, so retaliation lands normally. |
-| `BuffMinionAction` | minionId, attackDelta, healthDelta, sourceId |
+| `BuffMinionAction` | minionId, attackDelta, healthDelta, sourceId — appends a permanent `StatModifier` to the minion's `enchantments` and recomputes `attack`/`maxHealth`; `currentHealth` follows the `maxHealth` change per the **#13 rule** (§1 `maxHealth`). |
 | `SilenceMinionAction` | minionId, sourceId? |
 | `FreezeTargetAction` | targetId (a **minionId** — heroes cannot be frozen: heroes never attack (2026-06-11), so freeze has nothing to deny them), sourceId? — sets `isFrozen = true` and stamps `frozenOnTurn = turn.number` on the target; emits `MinionFrozenEvent`. Thawing is the end-of-turn unfreeze sweep (Turn Lifecycle step 3), never here. |
 | `ModifyManaAction` | playerId, delta, sourceId? — the sole arbitrary-`mana` mutation path (**The Coin** = `delta +1`). **Clamping (#22):** `mana` floors at **0** (a negative delta cannot push it below 0) and has **no ceiling** — a gain MAY exceed `maxMana` (The Coin can leave the second player above their crystal count, HS-faithful). It never touches `maxMana` (the ramp is a turn-end concern, Turn Lifecycle step 4). Emits `ManaChangedEvent`. |
@@ -920,7 +921,7 @@ interface ITraceSink { void Record(TraceRecord r); }   // engine ctor takes ITra
 {"k":"action","epoch":42,"action":{"type":"AttackAction","attacker":"m3","target":"m7"},"events":[{"type":"AttackPerformedEvent","attacker":"m3","target":"m7"}],"diff":{"m3.attacksUsedThisTurn":[0,1]},"enqueued":[{"type":"DealDamageAction","src":"m3","tgt":"m7","amount":2},{"type":"DealDamageAction","src":"m7","tgt":"m3","amount":4}]}
 {"k":"action","epoch":43,"action":{"type":"DealDamageAction","src":"m3","tgt":"m7","amount":2},"events":[{"type":"DamageTakenEvent","tgt":"m7","amount":2,"armorAbsorbed":0,"overkill":0,"src":"m3"}],"diff":{"m7.currentHealth":[4,2]}}
 {"k":"action","epoch":44,"action":{"type":"DealDamageAction","src":"m7","tgt":"m3","amount":4},"events":[{"type":"DamageTakenEvent","tgt":"m3","amount":4,"armorAbsorbed":0,"overkill":1,"src":"m7"},{"type":"MinionMortallyWoundedEvent","minion":"m3"}],"diff":{"m3.currentHealth":[3,-1]}}
-{"k":"settle","wave":0,"deaths":["m3"],"events":[{"type":"MinionDiedEvent","minion":"m3"},{"type":"DeathrattleTriggeredEvent","minion":"m3"}],"diff":{"m3":["p1.board[0]","p1.graveyard"]},"enqueued":[{"type":"DealDamageAction","src":"m3","tgt":"p2.hero","amount":1}]}
+{"k":"settle","wave":0,"deaths":["m3"],"events":[{"type":"MinionDiedEvent","minion":"m3"},{"type":"DeathrattleTriggeredEvent","minion":"m3"}],"diff":{"m3":["p1.board[0]","p1.graveyard"]},"enqueued":[{"type":"DealDamageAction","src":"m3","tgt":"p2","amount":1}]}
 ```
 
 **(2) Fireball countered (the #34 commit/resolve split).** `PlayCardAction` commits at ④ (mana paid, card → graveyard, `CardPlayedEvent`) and enqueues `ResolveCardAction`; `p2`'s Counterspell intercepts the **resolution**'s ③′; the resolution **fizzles** with no refund (mana stays 0, Fireball stays in the graveyard):
@@ -935,14 +936,14 @@ interface ITraceSink { void Record(TraceRecord r); }   // engine ctor takes ITra
 **(3) Intercepted deathrattle (the #18 enqueue-and-drain).** A settle wave enqueues a deathrattle's `DealDamageAction` (`src` = the dead `m3`), which drains through the **full pipeline** — so it reaches its own ③′, where `p2` cancels it; the damage **fizzles** eventlessly:
 
 ```json
-{"k":"settle","wave":0,"deaths":["m3"],"events":[{"type":"MinionDiedEvent","minion":"m3"},{"type":"DeathrattleTriggeredEvent","minion":"m3"}],"diff":{"m3":["p1.board[0]","p1.graveyard"]},"enqueued":[{"type":"DealDamageAction","src":"m3","tgt":"p2.hero","amount":3}]}
-{"k":"window","at":"③′","responder":"p2","held":{"type":"DealDamageAction","src":"m3","tgt":"p2.hero","amount":3},"candidates":[{"card":"c30","targets":[]}]}
+{"k":"settle","wave":0,"deaths":["m3"],"events":[{"type":"MinionDiedEvent","minion":"m3"},{"type":"DeathrattleTriggeredEvent","minion":"m3"}],"diff":{"m3":["p1.board[0]","p1.graveyard"]},"enqueued":[{"type":"DealDamageAction","src":"m3","tgt":"p2","amount":3}]}
+{"k":"window","at":"③′","responder":"p2","held":{"type":"DealDamageAction","src":"m3","tgt":"p2","amount":3},"candidates":[{"card":"c30","targets":[]}]}
 {"k":"action","epoch":61,"action":{"type":"SubmitInterventionAction","responder":"p2","card":"c30","targets":[]},"events":[{"type":"CardPlayedEvent","player":"p2","card":"c30"}],"diff":{"p2.mana":[2,1]}}
-{"k":"fizzle","action":{"type":"DealDamageAction","src":"m3","tgt":"p2.hero","amount":3},"reason":"Canceled","events":[]}
+{"k":"fizzle","action":{"type":"DealDamageAction","src":"m3","tgt":"p2","amount":3},"reason":"Canceled","events":[]}
 ```
 
 **Conventions.**
-- **Entity refs are bare ids** (`m3`, `c12`, `p1`, `h1` for heroes, `a2` for artifacts); the id → `definitionKey`/name join lives in `state` records — every line stays short, and the visualizer/pretty-printer does the join.
+- **Entity refs are bare ids** (`m3` minion, `c12` card, `a2` artifact, `p1`/`p2` the two players — a **hero is its player id**, no separate `h*` ref; §1 "Card and Minion Identity"); the id → `definitionKey`/name join lives in `state` records — every line stays short, and the visualizer/pretty-printer does the join.
 - **Diff keys are dotted paths** (`m7.currentHealth`, `p1.mana`), values `[from, to]`. **Zone moves** use the entity id as key and zone paths as values (`"m3": ["p1.board[0]", "p1.graveyard"]`); board *reorders* trace the same way (index-to-index).
 - Action/event payloads inline their §2 fields verbatim — the trace schema **defers to §2** rather than re-declaring shapes.
 - **No `queueAfter`** — the remaining queue is derivable from `enqueued` + FIFO order; printing it per action is pure redundancy (a future verbose flag could add it if the queue *discipline itself* ever needs debugging).
