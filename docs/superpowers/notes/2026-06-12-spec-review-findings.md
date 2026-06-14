@@ -88,6 +88,12 @@ Severity: **H**igh (blocks or corrupts implementation), **M**edium (must be deci
 
 33. **[LIMITATION, L] No mid-match hand-size/maximum-board interaction for inscriptions.** Inscribing frees a hand slot (stated); but nothing prevents *only* inscribe-locking: with 3 inscriptions down and 3 copies of other sigils in hand, the zone is the sole pressure valve (fine — just noting the cap interacts with #19/#28 constants once tuned).
 
+### D. Found during the fix pass
+
+34. **[recorded in the borrow-list note, not here]** The `PlayCardAction` → `ResolveCardAction` commit/resolve split (interception-cancel was a free no-op). User-found in session 10, applied in batch 1 (`375d40d`). Listed here only for numbering continuity; full record in the borrow-list "Spec-review fix pass" section.
+
+35. **[CONTRADICTION/HOLE, M] Stealth-break (and attack-budget) timing vs interception — a *cancelled* attack currently keeps Stealth and its attack.** The `AttackAction` ④ handler (§2A) breaks Stealth (step 3) and consumes `attacksUsedThisTurn` (step 2) **inside ④**, *after* the ③′ interception window. So an attack **cancelled** at ③′ never reaches ④ → the attacker keeps Stealth and its attack budget. Intended behavior (user, 2026-06-14): **declaring** an attack reveals the minion, so an intercepted/cancelled attack should still break Stealth — the swing is prevented, not the reveal. (A *retarget* interception already proceeds to ④, so it breaks Stealth; the gap is the *cancel* case only.) Surfaced while correcting a stray "`AttackDeclaredEvent` is a renderer convenience" line — `AttackDeclaredEvent` is in fact mechanically load-bearing (the ③′ hook interception fires on), which is the whole point. **Resolution direction (to walk this session):** apply the **#34 pattern** to combat — `AttackAction` ④ *commits* the reveal (break Stealth + consume budget + `AttackPerformedEvent`) and enqueues a resolution (`ResolveAttackAction`-style) whose ③′ is the damage-interception window; "prevent the attack" then hooks `AttackAction` ③′ (nothing committed, Stealth survives), "counter the swing" hooks the resolution (already revealed) — structurally identical to the spell cast/counter split. **Open sub-questions:** budget-on-commit vs on-resolve; whether the retaliation `DealDamageAction` splits the same way; exact placement of `AttackDeclaredEvent`/`AttackPerformedEvent`; interaction with the existing "two independent `DealDamageAction`s" combat model.
+
 ---
 
 ## Part 2 — Differences from Hearthstone

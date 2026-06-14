@@ -33,14 +33,33 @@ currentActionEpoch: int               // monotonic; ++ per action at stage ④; 
 ```
 maxCapacity: int
 spawnPool: Card[]
-repopulateOnTurnStart: bool
+firstSpawnTurn: int      // = GameConstants.NeutralFirstSpawnTurn (3): the first turn whose Interturn handover (Turn Lifecycle step 5) repopulates the lane. Before it the lane stays EMPTY; from it on, EVERY handover tops the lane up to maxCapacity (initial seed and recurring refill are one rule). Replaces the old repopulateOnTurnStart bool — neutral spawn timing is now fixed to the neutral handover (turn-END), NOT turn-start, so the upcoming player always gets first crack at what was added (§4 Turn Lifecycle step 5).
+```
+
+### GameConstants
+
+Engine-wide constants — the **single source** for setup values and caps, so a future game mode (or a deck-conditional rule, e.g. "deck contains card X ⇒ that player's mana cap +1") overrides them in one place rather than at scattered call sites. Values are the v1 defaults (HS-faithful where an analogue exists). `MaxArtifacts`/`MaxInscriptions`/`MaxDeathWaves` were already referenced inline elsewhere — this block is now their definition too (closing the scattered-magic-number gap, review finding #28).
+
+```
+MaxArtifacts             = 3     // artifact row cap (§1 PlayerState)
+MaxInscriptions          = 3     // inscription row cap (§1 PlayerState; §3 Sigils)
+MaxDeathWaves            = 16    // death-cascade iteration cap (§4 ⑦)
+StartingHeroHealth       = 30    // each hero's starting AND maximum health (§1 PlayerState.health; the HealAction cap, #12)
+StartingHandFirstPlayer  = 3     // opening hand dealt to the player going first
+StartingHandSecondPlayer = 4     // opening hand dealt to the player going second (who also gets The Coin — Match Setup)
+HandCap                  = 10    // max hand size; an 11th card is burned (HandOverflowEvent; also the full-hand bounce/give bound, #21)
+MaxMana                  = 10    // mana-crystal ceiling (maxMana ramp cap; Turn Lifecycle step 4)
+StartingMana             = 1     // turn-1 mana/maxMana seeded for the first player at setup
+DeckSize                 = 30    // exact decklist size the engine asserts at init
+MaxCopiesPerCard         = 2     // per-definitionKey copy limit (1 for a Legendary) — primarily server-side deck validation, asserted here as a guard
+NeutralFirstSpawnTurn    = 3     // default NeutralZoneConfig.firstSpawnTurn — end of P1's second turn
 ```
 
 ### PlayerState
 
 ```
 playerId, heroClass: string
-health, mana, maxMana: int
+health, mana, maxMana: int    // health: init = max = GameConstants.StartingHeroHealth (30); a HealAction caps a hero at this max (#12 — the minion "healed up to maxHealth" rule applied to heroes), armor (below) being the only over-cap. mana/maxMana: 0 at setup, turn-1 seeded to StartingMana (1) for the first player (Match Setup), thereafter refreshed at turn-END (Turn Lifecycle step 4); mana MAY exceed maxMana via a gain such as The Coin (§2A ModifyManaAction, #22). (Hero entity-id addressing convention is review finding #12, walked separately.)
 armor: int                    // hero damage ABSORBER (init 0, no cap): depleted before health at the §4 ④ damage-modifier precedence (hero slot — the minion analogue is Divine Shield). Gained only via GainArmorAction. NOTE heroes have NO attack stat, NO weapon, NO frozen state — heroes never attack (hero-weapon concept dropped 2026-06-11; the hero kit is the artifact row below)
 hand: Card[]
 deck: Card[]
@@ -78,7 +97,7 @@ intrinsicTribes: Tribe        // copied from the card's tribes at summon; immuta
 grantedTribes: Tribe          // permanent tribe grants ("becomes a Beast"); Silence clears to Tribe.None
 auraTribes: Tribe             // recomputed each aura pass; never persisted (parallels auraAttackBonus); drops when the aura leaves
 effectiveTribes: Tribe        // computed = intrinsicTribes | grantedTribes | auraTribes; all engine tribe checks use this
-summoningSick: bool           // raw fact (replaces the old derived `canAttack` bool): true while this minion entered a board THIS turn and has not yet woken at its controller's turn-start. Set on board-entry by BOTH summon and control; cleared by the turn-start sweep (Turn Lifecycle step 6). Attack eligibility — including the Charge-any-target / Rush-minions-only distinction — is PULLED from effective keywords at §4 ③, never baked into a stored verdict here. Neutrals are never summoningSick (no turn of their own; command bypasses eligibility and retaliation is ungated).
+summoningSick: bool           // raw fact (replaces the old derived `canAttack` bool): true while this minion entered a board THIS turn and has not yet woken at its controller's turn-start. Set on board-entry by BOTH summon and control; cleared by the turn-start sweep (Turn Lifecycle step 7). Attack eligibility — including the Charge-any-target / Rush-minions-only distinction — is PULLED from effective keywords at §4 ③, never baked into a stored verdict here. Neutrals are never summoningSick (no turn of their own; command bypasses eligibility and retaliation is ungated).
 attacksUsedThisTurn: int      // raw counter, incremented on each attack; reset at the controller's turn-start sweep. The ONLY attack-state stored on the minion — the per-turn attack BUDGET is deliberately NOT a field: it is PULLED from effective keywords at §4 ③ (Windfury → 2, else 1; extensible to future budget-granting keywords), so it can never desync from the keyword (silencing Windfury drops the budget to 1 on the spot). NOT consulted for a neutral commanded via CommandAttackAction — command is a card-granted activation, not the minion's own budget (§2A / §4 ③).
 summonOrder: int              // monotonically increasing per session; used for trigger fire ordering
 isFrozen: bool                // frozen → cannot attack (§4 ③ AttackerFrozen)
@@ -104,7 +123,7 @@ durability: int?              // null = infinite. ONE counter; the definition de
                               // activation, trigger-fire, or both. Reaching 0 enqueues DestroyArtifactAction.
 charges: int                  // generic accumulator, init 0 — instance state for quest-counter designs (mutated only via
                               // ModifyArtifactChargesAction → ArtifactChargesChangedEvent)
-usesThisTurn: int             // activations this turn; reset at the controller's turn start (Turn Lifecycle step 7);
+usesThisTurn: int             // activations this turn; reset at the controller's turn start (Turn Lifecycle step 8);
                               // feeds escalating-cost formulas. There is NO per-turn activation budget — cost and
                               // durability are the only limiters.
 equippedOnTurn: int
@@ -166,7 +185,7 @@ GraveyardArtifact : GraveyardEntry
 ### Supporting types
 
 ```
-TurnState           — activePlayerId: string, number: int
+TurnState           — activePlayerId: string?, number: int   // activePlayerId null = the neutral lane's "turn" — held ONLY during the Interturn neutral handover (§4 Turn Lifecycle step 5): neither player is active, so neither player's triggers fire — only the neutral group does (§3 IEventBus). Never null while either player may submit an action.
 TimerState          — secondsRemaining: int
 PendingChoice       — waitingPlayerId: string, choiceType: ChoiceType, options: ChoiceOption[],
                        context: JsonElement  // stores effect continuation. Chained choices = a continuation issuing the next
@@ -314,10 +333,10 @@ All actions carry a nullable `SourcePlayerId` (null = system-issued) and a `Requ
 | `BuffMinionAction` | minionId, attackDelta, healthDelta, sourceId |
 | `SilenceMinionAction` | minionId, sourceId? |
 | `FreezeTargetAction` | targetId (a **minionId** — heroes cannot be frozen: heroes never attack (2026-06-11), so freeze has nothing to deny them), sourceId? — sets `isFrozen = true` and stamps `frozenOnTurn = turn.number` on the target; emits `MinionFrozenEvent`. Thawing is the end-of-turn unfreeze sweep (Turn Lifecycle step 3), never here. |
-| `ModifyManaAction` | playerId, delta, sourceId? |
+| `ModifyManaAction` | playerId, delta, sourceId? — the sole arbitrary-`mana` mutation path (**The Coin** = `delta +1`). **Clamping (#22):** `mana` floors at **0** (a negative delta cannot push it below 0) and has **no ceiling** — a gain MAY exceed `maxMana` (The Coin can leave the second player above their crystal count, HS-faithful). It never touches `maxMana` (the ramp is a turn-end concern, Turn Lifecycle step 4). Emits `ManaChangedEvent`. |
 | `ShuffleDeckAction` | playerId, sourceId? |
 | `DiscardCardAction` | playerId, cardId? (null = random), sourceId? |
-| `SpawnNeutralMinionAction` | definitionKey, position?, sourceId? — summons a minion into the neutral lane (`ownerId = null`, `bornNeutral = true`), entering the board through the **same routine as a regular summon** (registers its `ICardHandler` triggers/keywords; `summoningSick` is moot — neutrals have no turn). Emits the regular **`MinionSummonedEvent` with `ownerId == null`** — *not* a neutral-specific event — so summon-watching mechanics fire out of the box. A summon, not a play ⇒ no Battlecry (matches `SummonMinionAction`). |
+| `SpawnNeutralMinionAction` | definitionKey? (null ⇒ draw one uniformly **with replacement** from `neutralZoneConfig.spawnPool` via this action's ④ `IRandom` — the neutral-handover refill path enqueues `maxCapacity − currentCount` of these with a null key, Turn Lifecycle step 5), position?, sourceId? — summons a minion into the neutral lane (`ownerId = null`, `bornNeutral = true`), entering the board through the **same routine as a regular summon** (registers its `ICardHandler` triggers/keywords; `summoningSick` is moot — neutrals have no turn). Emits the regular **`MinionSummonedEvent` with `ownerId == null`** — *not* a neutral-specific event — so summon-watching mechanics fire out of the box. A summon, not a play ⇒ no Battlecry (matches `SummonMinionAction`). |
 | `StartChoiceAction` | waitingPlayerId, choiceType, options[], context. Its ④ handler emits the chooser-directed `ChoicePromptEvent` (options) + the public thin `ChoiceStartedEvent` (optionCount) — §2B "Directed events" |
 | `StartInterventionAction` | respondingPlayerId, heldAction? (null = post-reaction window — nothing held, e.g. a dying-window save), candidates[] (`{cardId, targetIds[]}` — the responder's matching + affordable hand cards with their engine-computed legal targets, §1 `InterventionCandidate`), causeEventIds[]? (⑥′ only — the matched events the window is *about*), timeoutSeconds. Its ④ handler emits the responder-directed `InterventionPromptEvent` + the public thin `InterventionWindowOpenedEvent` (§2B) |
 
@@ -365,7 +384,7 @@ All events carry an `eventId: long` (append-order sequence number, unique per se
 | `MinionDiedEvent` | minionId, snapshot, sourceId, diedOnTurn |
 | `MinionTransformedEvent` | minionId, newCard |
 | `MinionControlChangedEvent` | minionId, fromOwnerId? (null = was neutral), toOwnerId — emitted by `TakeControlAction` after the minion is re-homed onto its new owner's board (summoning-sick on arrival; it may still act this turn if it has Charge/Rush — pulled at §4 ③). A commanded attack (`CommandAttackAction`) does **not** emit this — it changes no owner — it rides the ordinary combat events. |
-| `NeutralZoneRepopulatedEvent` | spawnedMinions[] — **renderer-only batch marker** for a turn-start neutral-zone repopulation (`NeutralZoneConfig.repopulateOnTurnStart`); carries no mechanic. The actual per-minion summons go through `SpawnNeutralMinionAction` → one `MinionSummonedEvent` each (so summon-watching triggers fire normally); this event is an optional summary the client may use to animate the batch, parallel to how `AttackDeclaredEvent` is a renderer convenience. *(The former separate `NeutralMinionSpawnedEvent` was removed — a neutral spawn is just a `MinionSummonedEvent` with `ownerId == null`.)* |
+| `NeutralZoneRepopulatedEvent` | spawnedMinions[] — **renderer-only batch marker** for a neutral-zone repopulation at the **Interturn handover** (§4 Turn Lifecycle step 5 — the neutral lane's own "turn", `activePlayerId = none`); carries no mechanic. The actual per-minion summons go through `SpawnNeutralMinionAction` → one `MinionSummonedEvent` each (so summon-watching triggers fire normally); this event is an optional summary the client may use to animate the batch. *(The former separate `NeutralMinionSpawnedEvent` was removed — a neutral spawn is just a `MinionSummonedEvent` with `ownerId == null`.)* |
 | `DeathWaveStartedEvent` | waveIndex |
 | `DeathWaveEndedEvent` | waveIndex, minionsResolved |
 | `StabilizationAbortedEvent` | wavesReached, lastWaveMinionIds[] — fatal; always immediately followed by `GameEndedEvent { reason: NoContest }` |
@@ -426,7 +445,7 @@ All events carry an `eventId: long` (append-order sequence number, unique per se
 | `BattlecryTriggeredEvent` | minionId |
 | `DeathrattleTriggeredEvent` | minionId |
 | `ComboTriggeredEvent` | cardId, playerId |
-| `ActionDeclaredEvent` | action — the universal **pre-execution** signal: published at stage **③′** (§4) for every dispatched action *after* it validates and *before* it executes (④), carrying the action itself. The single hook for **interception** (declaration-phase) reactions; subscribers filter on the carried action's runtime type/params via the condition library, so **no per-action-type `*Declared` taxonomy is required**. Published afresh on **each (re-)declaration**: a held action resumed after a responder *played* an intervention re-validates and, if still legal, **re-declares** — re-publishing this event so the responder's remaining reactive cards get another window (the session-6 **re-declare loop**, §4 ③′); a **skip/timeout** resumes the held action without re-declaring. Redirect/inscription loops are bounded not by suppressing re-declaration but by the **depth-1 nesting cap** (a response opens no further *player* window on itself) plus the responder's finite mana. **Bus-only: not a state delta, so excluded from the persisted event log and client wire format** (see the "Bus ⊋ log" note above). (The pre-existing typed `AttackDeclaredEvent` is the combat-specific declaration, retained for renderer convenience at the same timing; it is not the general hook.) |
+| `ActionDeclaredEvent` | action — the universal **pre-execution** signal: published at stage **③′** (§4) for every dispatched action *after* it validates and *before* it executes (④), carrying the action itself. The single hook for **interception** (declaration-phase) reactions; subscribers filter on the carried action's runtime type/params via the condition library, so **no per-action-type `*Declared` taxonomy is required**. Published afresh on **each (re-)declaration**: a held action resumed after a responder *played* an intervention re-validates and, if still legal, **re-declares** — re-publishing this event so the responder's remaining reactive cards get another window (the session-6 **re-declare loop**, §4 ③′); a **skip/timeout** resumes the held action without re-declaring. Redirect/inscription loops are bounded not by suppressing re-declaration but by the **depth-1 nesting cap** (a response opens no further *player* window on itself) plus the responder's finite mana. **Bus-only: not a state delta, so excluded from the persisted event log and client wire format** (see the "Bus ⊋ log" note above). (The typed `AttackDeclaredEvent` is the combat-specific declaration at the same ③′ timing — the typed "when this attacks" interception hook, bus-only per #5; it is *not* a renderer convenience and *not* the general hook — `ActionDeclaredEvent` is the general hook, `AttackDeclaredEvent` the typed combat-specific one, both mechanically load-bearing.) |
 
 **Choice / Intervention:**
 
@@ -486,7 +505,7 @@ interface IActionHandler<TAction> where TAction : GameAction {
 
 ### `IEventBus`
 
-Broadcast backbone. Dispatches in the **canonical board order** (see Deterministic Ordering): three ordered groups per event type — the current (active) player's triggers, then the opponent's, then the **neutral zone's** — fired in that sequence, and within each group sorted by current board index at publish time (not at subscription time, so a minion that fills a vacated slot fires in the position it currently occupies). **Within each player's group, that player's artifact-hosted triggers fire after their minion-hosted ones** (artifact slot order `artifacts[0..2]` as the within-row index, mirroring board index; 2026-06-11), **and their inscription-hosted triggers after those** (inscription order `inscriptions[0..2]`; §3 "Sigils" — subject to the actor-attribution skip rule there) — artifacts and inscriptions append to their owner's existing bucket rather than forming new global groups, which preserves the active-player-first promise (an active player's artifact fires before any opponent trigger). The neutral group is the trigger-side counterpart of the neutral zone's last slot in the death sort; it makes trigger fire order and death sort order **one rule**.
+Broadcast backbone. Dispatches in the **canonical board order** (see Deterministic Ordering): three ordered groups per event type — the current (active) player's triggers, then the opponent's, then the **neutral zone's** — fired in that sequence, and within each group sorted by current board index at publish time (not at subscription time, so a minion that fills a vacated slot fires in the position it currently occupies). **Within each player's group, that player's artifact-hosted triggers fire after their minion-hosted ones** (artifact slot order `artifacts[0..2]` as the within-row index, mirroring board index; 2026-06-11), **and their inscription-hosted triggers after those** (inscription order `inscriptions[0..2]`; §3 "Sigils" — subject to the actor-attribution skip rule there) — artifacts and inscriptions append to their owner's existing bucket rather than forming new global groups, which preserves the active-player-first promise (an active player's artifact fires before any opponent trigger). The neutral group is the trigger-side counterpart of the neutral zone's last slot in the death sort; it makes trigger fire order and death sort order **one rule**. **Exception — the neutral handover (§4 Turn Lifecycle step 5, "Interturn"):** that step runs as the **neutral lane's own turn** with `turn.activePlayerId = none` (null). With no active player, the active and opponent groups are **empty** — so *neither* player's triggers fire on the neutral-lane repopulation, **only the neutral group does**. This is the exact dual of neutral minions being excluded from player turns (above): players are excluded from the neutral lane's turn. No cross-player ordering exists to bias — strictly fairer than any fixed seat order.
 
 This applies to **board-wide event triggers** (on-damage, on-death, on-spell-cast, on-summon, …) — a neutral minion's `FriendlyOnly`-conditioned trigger fires off its **lane-mates** (friendly is lane-based; see `ITriggerCondition`), so neutral minions trigger off each other just as a player's do. It does **not** make neutral minions fire **turn/hero-context** triggers, which stay empty for want of a referent (not because of the friendly relation): **Start/End-of-Turn** (enumerated per player in the Turn Lifecycle — a neutral minion has no turn of its own), **OnArtifactActivated** (the renamed Inspire — "after *you* activate an artifact"; a neutral host has no artifact row of its own), **Combo** (no hand / turn play-count). This is all condition semantics, not a bus special-case. (Artifacts themselves, by contrast, participate in turn-scoped triggers normally — they have an owner with turns.)
 
@@ -964,6 +983,7 @@ Rejects the action if it is not valid in the current `GamePhase`, returning `Rej
 
 | Phase | Accepted actions |
 |---|---|
+| `WaitingForPlayers` | None — pre-game: awaiting both players' connections. **Match Setup** runs on the second connect, then → `Mulligan`. |
 | `Mulligan` | `SubmitMulliganAction` only |
 | `InProgress` | All player-initiated actions |
 | `PendingChoice` | `SubmitChoiceAction` from the waiting player only |
@@ -1078,6 +1098,21 @@ Post-reaction windows are **not** opened here at the settle; they open **per act
 
 ---
 
+### Match Setup
+
+Runs **once**, before the first turn, when the second player connects (the `WaitingForPlayers` → `Mulligan` transition — ② phase-guard). All randomness is seeded from `rngSeed` via `IRandom` (§3), so setup is replay-exact. Bracketed values are `GameConstants` (the single source).
+
+1. **Players & heroes.** Both `PlayerState`s are built from their decklists. Each hero starts at `StartingHeroHealth` (30) health **and** max (the `HealAction` cap, #12), `armor = 0`, `mana = maxMana = 0`, `fatigueCounter = 0`. Each player is equipped the shared **starter artifact** via `EquipArtifactAction` (§2A).
+2. **Deck assertion & shuffle.** The engine asserts each decklist is exactly `DeckSize` (30) cards within `MaxCopiesPerCard` (2; 1 per Legendary) — primarily server-side deck validation, asserted here as a guard — then Fisher-Yates-shuffles each deck over `IRandom`.
+3. **First player.** A seeded coin flip picks who goes first.
+4. **Opening hands.** Deal `StartingHandFirstPlayer` (3) to the first player, `StartingHandSecondPlayer` (4) to the second. **Guaranteed opening card (deck-build pin):** a decklist may flag **one** `guaranteedOpeningCardKey`; after the shuffle, if no copy of that `definitionKey` already lies within the player's opening-hand slice, the engine **swaps the top-most copy into the opening hand** — a pure post-shuffle position swap that consumes **no** `IRandom`, so the remaining deal is unbiased and replay stays exact. The pin guarantees only the initial deal — the card carries **no** mulligan protection (it can be replaced like any other). Optional (a deck may have none).
+5. **The Coin.** The second player additionally receives **The Coin** — a 0-cost card whose effect enqueues `ModifyManaAction { delta = +1 }` (the going-second equalizer; it may push `mana` above `maxMana`, §2A #22). This stands in for HS's temporary mana crystal, which this model does not have.
+6. **Opening-hand sigil registration.** Because the opening hand is dealt **here**, outside the action pipeline, any reactive (sigil) cards in it register their hand-zone triggers **at setup with `birthEpoch = 0`** (the match-start epoch) — *not* in the `DrawCardAction`/`GiveCardAction` handler, which covers only in-game additions. They are live for invocation from turn 1.
+7. **Mulligan (HS-faithful).** `phase → Mulligan`; each player sees their own opening hand (directed `MulliganStartedEvent`, own options only) and may replace **any subset** (`SubmitMulliganAction { cardIdsToKeep[] }` — the complement is replaced). The **replacement cards are drawn first**, *then* the replaced cards are shuffled back into the deck — so a replaced card cannot be immediately redrawn. Both `MulliganCompletedEvent`s in (`mulliganState` both-complete) ends the phase.
+8. **Turn 1.** Seed the first player's `mana = maxMana = StartingMana` (1) **directly** — there is no preceding turn-end refresh (Turn Lifecycle step 4 note); `phase → InProgress`; begin turn 1. The neutral lane is **empty** until its first Interturn handover (end of turn 3 — `NeutralZoneConfig.firstSpawnTurn`).
+
+---
+
 ### Turn Lifecycle
 
 The `EndTurnAction` handler and subsequent system actions implement the full turn transition:
@@ -1086,13 +1121,14 @@ The `EndTurnAction` handler and subsequent system actions implement the full tur
 2. Fire End-of-Turn triggers (current player L→R, then opponent L→R) — **neutral minions are intentionally excluded** (turn-scoped; a neutral minion has no turn of its own — see §3 `IEventBus`)
 3. **Unfreeze sweep — for the player whose turn is ENDING** (before the swap, so the freeze actually costs an attack rather than thawing at the start of the controller's turn): thaw each frozen minion they control **unless** it was frozen *this* turn while exhausted — i.e. keep frozen iff `frozenOnTurn == turn.number && attacksUsedThisTurn >= budget` (the same exhaustion test as `AttackerExhausted`, §4 ③); otherwise set `isFrozen = false`, clear `frozenOnTurn`, emit `MinionThawedEvent`. This makes Freeze cost exactly one attack (a minion frozen after swinging stays frozen through its next turn; one frozen on the opponent's turn, or this turn before swinging, thaws at the end of the turn it was unable to act). Minions only — heroes have no frozen state (§1).
 4. **Mana refresh — for the player whose turn is ENDING** (moved from turn-start to turn-**end**, 2026-06-09): increment *their* `maxMana` (cap 10) and restore *their* `mana` to `maxMana`. Refreshing here pre-loads the full pool the player then carries **through the opponent's turn**, so an off-turn **intervention** spends straight from `mana` (the ordinary `effectiveCost ≤ mana` check) and the player's own next turn simply begins with whatever interventions didn't consume — **no `reservedMana` field, no separate ceiling**; the affordability ceiling is naturally their *full ramped* next-turn pool. (The game's first turn has no preceding turn-end, so game setup seeds each player's turn-1 `mana`/`maxMana` directly. A future overload-style "less mana next turn" effect would apply its reduction here.)
-5. Swap active player
-6. Clear `summoningSick` (wake) and reset `attacksUsedThisTurn` on all of the new active player's minions
-7. Reset `cardsPlayedThisTurn`; reset `usesThisTurn` on each of the new active player's artifacts (re-arms escalating activation costs — §1 `ArtifactOnBoard`)
-8. Enqueue `DrawCardAction`
-9. Publish `TurnStartedEvent`
-10. Fire Start-of-Turn triggers (new active player L→R, then opponent L→R) — neutral minions excluded (turn-scoped; step 2)
-11. Start turn timer
+5. **Interturn — the neutral lane's "turn" (`activePlayerId = none`).** Runs after the ending player's cleanup and before the swap, owned by **neither** player. For its duration `turn.activePlayerId` is **none** (null): with no active player, neither player's trigger groups fire — **only the neutral group does** (§3 `IEventBus`), the exact dual of neutral minions being excluded from player turns. **Repopulation:** if `neutralZoneConfig != null` **and** `turn.number ≥ neutralZoneConfig.firstSpawnTurn` (default 3 — the end of P1's second turn), **refill the neutral lane to `maxCapacity`** by enqueuing `SpawnNeutralMinionAction { definitionKey = null }` × (`maxCapacity − currentCount`) — each draws its definition from `spawnPool` at its own ④ `IRandom` and emits `MinionSummonedEvent { ownerId = null }`; the batch is bracketed by `NeutralZoneRepopulatedEvent` (renderer marker). The first qualifying handover finds an empty lane and **seeds** full capacity; every later one **tops it up** — initial seed and recurring refill are one rule, no special branch. **Consequence:** a player's board-wide on-summon (or other) reaction does **not** fire on a handover spawn — the neutral lane's turn is walled off from both players (a neutral *card-spawned on a player's turn* still triggers player reactions normally; only the handover is walled). No-op before `firstSpawnTurn` or when the lane is already full. **Reserved seam:** the Interturn step is the *only* owned-by-neither, fair-dispatch, once-per-handover point in the loop; neutral repopulation is v1's sole inhabitant (other candidates — neutral-minion upkeep, environmental/round effects, shared-resource ticks — recorded in the borrow-list note).
+6. **Advance the active player** to the incoming player (out of the Interturn `none` state — the one who did *not* just end their turn)
+7. Clear `summoningSick` (wake) and reset `attacksUsedThisTurn` on all of the new active player's minions
+8. Reset `cardsPlayedThisTurn`; reset `usesThisTurn` on each of the new active player's artifacts (re-arms escalating activation costs — §1 `ArtifactOnBoard`)
+9. Enqueue `DrawCardAction`
+10. Publish `TurnStartedEvent`
+11. Fire Start-of-Turn triggers (new active player L→R, then opponent L→R) — neutral minions excluded (turn-scoped; step 2)
+12. Start turn timer
 
 Each of these produces actions that go through the full pipeline.
 
