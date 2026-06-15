@@ -199,6 +199,22 @@ Resumed at the re-posed `heroAttack` question (temporary-vs-persistent). **The u
 
 **THE SPEC HAS ZERO OPEN DESIGN QUESTIONS** (the review found *execution* defects + holes, not unsettled design forks — except where flagged). Everything is decided, recorded, or explicitly v2 (crafting). **The only remaining pre-implementation work is the end-of-pass plan reconciliation** (all `Plan impact:` lists → epic/ticket files; weapon-scope deletion + artifact re-scope + sigil additions + the library-seam constraint + `HasTribe` + `InvertTargetAction` + `DestroyMinionAction` semantics; stale-name sweeps) → then **Epic 01 / T1.1**.
 
+### ⏹ SESSION STOP (2026-06-16, end of session 13)
+
+**State:** Session 13 RESOLVED + APPLIED + committed findings **#16 + #17** — the session-12 parked foundational question ("should the active player ever intervene on his own turn?") was decided **Model B′ (turn-based)**, and the whole intervention delivery model was reworked. **1 commit (`3dd95e5`) ahead of `origin/main`; the session-12 commits already appear on `origin/main` per local refs (the earlier "not pushed" note was stale — verify on next fetch). Tree clean.**
+
+**The multi-turn design arc (how we got to B′):**
+1. **A vs B foundational question → Model B′.** Prior-art grounding: MTG (APNAP), YGO (Quick Effects), LoR (reactive stack) all let the active player respond on his own turn; HS — our genre — does **not**, and our sigils were the only thing that had drifted from HS. Chose turn-based: responder = always the non-active player; inscriptions **and** invocations off-turn only; no intervention while `activePlayerId == null`. This **dissolves #17** (no source-attribution — own-turn cards are simply off) and makes depth-1 automatic.
+2. **Probed dropping ⑥′** (keep only ③′, since ③′ holds an action with a clean actor). Surfaced the **reap-as-action** idea (make death-removal a declared action so R1 dying-window saves live at *its* ③′, restoring point-D's "everything interceptable is an action" invariant). Explored thoroughly, **not taken** — B′ + keeping ⑥′ was simpler; reap-as-action recorded as a viable future option.
+3. **User authored a delivery spec** (turn-gated responder; unconditional 1s decision + 3s extension windows; skip/skip-all; 3-press cap). Reviewed → reworked into the final model. The Effigy-class "lost content" boundary I flagged was **wrong** (HS Secrets are off-turn anyway — Effigy included) and dropped.
+
+**Applied to spec (`3dd95e5`, §1–§4, grep-verified clean):** GameConstants (`InterventionDecisionWindow` 1s / `InterventionExtensionWindow` 3s / `MaxInterventionsPerTurn` 3); `GamePhase` split `PendingIntervention`→`InterventionDecision|InterventionExtension`; `TurnState.interventionsUsed`; `PlayerState.autoSkipAll`; new `RespondInterventionAction` + re-scoped `Start`/`SubmitInterventionAction`; `InterventionWindowOpenedEvent { phase, stage }`; new §3 "The responder & window delivery" block + Sigils off-turn rule + contingent-window reversal; Phase Guard two rows; ③′/⑥′ unconditional+turn-gated+budget guards; Turn Lifecycle `interventionsUsed` reset; trace `window` record `stage` + worked examples (2)/(3); base-window-budget pin (Unaddressed Features). **Design log:** borrow-list "Spec-review fix pass" #16/#17 + findings-doc #16/#17 (both → RESOLVED).
+
+**▶ RESUME PLAN:**
+1. **Continue the findings walk: #19–#21, #23–#33** (skip #18 done, #30 moot, #35 kept). User-needed game-design forks: #19 neutral-zone capacity, #20 Reborn-HP summon param, #21 full-hand bounce/give, #23 Combo accounting, #24 choice-timeout, #27 `Start*` declarability. Mechanical: #25/#26/#28/#29/#31/#32/#33. (Per-finding split: session-9 stop block.)
+2. **Then end-of-pass plan reconciliation** (all `Plan impact:` lists → epic/ticket files; **the #17 actor-classification is now DROPPED, not built**) → **Epic 01 / T1.1**.
+3. **PUSH** `3dd95e5` (and re-confirm the session-12 commits are on `origin`) when ready.
+
 ### ⏹ SESSION STOP (2026-06-15, end of session 12)
 
 **State:** Session 12 continued the SPEC-REVIEW FIX PASS past batch 1, walking findings #11–#17 (+ logging new #35). **Applied + committed: #11, #12, #13, #14, #15, #22 + two NEW user mechanics (Items 1 & 2) + the Interturn neutral-handover lifecycle step.** #35 logged + reviewed→kept. **#16 + #17 REVIEWED → PARKED** pending a foundational question (below). **4 commits are LOCAL on `main` — NOT pushed to `origin`; tree clean after a revert.**
