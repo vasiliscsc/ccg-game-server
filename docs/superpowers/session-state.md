@@ -199,6 +199,22 @@ Resumed at the re-posed `heroAttack` question (temporary-vs-persistent). **The u
 
 **THE SPEC HAS ZERO OPEN DESIGN QUESTIONS** (the review found *execution* defects + holes, not unsettled design forks — except where flagged). Everything is decided, recorded, or explicitly v2 (crafting). **The only remaining pre-implementation work is the end-of-pass plan reconciliation** (all `Plan impact:` lists → epic/ticket files; weapon-scope deletion + artifact re-scope + sigil additions + the library-seam constraint + `HasTribe` + `InvertTargetAction` + `DestroyMinionAction` semantics; stale-name sweeps) → then **Epic 01 / T1.1**.
 
+### ⏹ SESSION STOP (2026-06-17, end of session 14)
+
+**State:** Session 14 **completed the SPEC-REVIEW FIX PASS** — walked the final block (#19–#21, #23–#29, #31–#33) and applied all of it to the spec. **The entire fix pass is now DRAINED** (#1–#10b/#18/#34 batch 1; #10c moot; #11–#15/#22/Items 1&2/Interturn session 12; #16/#17 session 13; #19–#33 this session; #30 moot; #35 reviewed→kept). **Spec grep-verified clean.** Commit pending; **`3dd95e5` (session 13) is still local on `main` — this session's commit will be the 2nd unpushed.**
+
+**What landed (spec §1–§4):** 4 user-decided game-feel forks + 2 shape forks + 7 mechanical fixes —
+- **#19** neutral-lane full → **fizzle at ④** (effect/system spawn; refill self-limits). **#21** full-hand bounce → **destroy → Deathrattle fires** (HS-faithful; normal bounce is *not* a death → no deathrattle; one invariant, surfaced by the user's edge probe). **#23** Combo → **on-turn only, invocations don't count, per-player reset.** **#24** PendingChoice timeout → **server-rolled random** (logged input, replay-exact) + **mulligan keep-all.**
+- **#20** Reborn → `SummonMinionAction.currentHealthOverride: int?` (clamp `[1,maxHealth]`; Reborn passes 1). **#27** `Start*`/`Respond*`/`Submit*` window-machinery actions **don't publish `ActionDeclaredEvent`** (engine-internal window/choice-opening; closes the "cancel a window's opening" recursion).
+- **#25** drop-list "leaves the hand by any route." **#26** empty-pool guard fire-time honesty. **#28** `GameConstants.MaxBoardMinions = 7` + `BoardFull` ref. **#29** deleted vestigial `MinionStatsChangedEvent`. **#31(+#33)** new Unaddressed-Features "Inscription counterplay" entry (`InscriptionSelector` + `DestroyInscriptionAction`, additive; inscribe-locking note). **#32** Sigil/Stealth mode-asymmetry sentence.
+
+**Records:** findings-doc #19–#33 each annotated `▶ RESOLVED (session 14)`; borrow-list "Spec-review fix pass" header → **COMPLETE**, new "### #19–#33 ✅ APPLIED (session 14)" subsection with the consolidated session-14 Plan-impact list; data-model mirror `cardsPlayedThisTurn` re-synced.
+
+**▶ RESUME PLAN:**
+1. **END-OF-PASS PLAN RECONCILIATION** — the last task before implementation. Walk every `Plan impact:` line accumulated across the borrow-list note (the 13-item pass, the Fireplace points, the hole-hunting pass, the spec-review fix pass incl. the session-14 additions) into the Epic/ticket files under `plans/2026-05-27-ccg-game-logic/`; create the flagged new tickets/epics (known: `StabilizationAbortReport` telemetry T4.8, `ITriggerCondition` lib T8.10, Bot Support epic, `IRandom`+error-codes Epic 01, tribe/keyword 4-field, `ITargetSelector` lib Epic 08, command-log replay Epic 16, `IKeyword` collapse + Epic 07 re-scope, hero-power→Artifact re-scope, weapon-concept deletion, sigils, library-overlay seam, `ResolveCardAction` split, the session-14 list above). The **#17 actor-classification is DROPPED, not built.** Stale-name sweep of plan/README (e.g. `canAttack`, `attacksAllowedThisTurn`, `originalCard`, weapon refs, hero-power refs).
+2. **Then implementation: Epic 01 / T1.1.**
+3. **PUSH** the local commits (`3dd95e5` + session-14) to `origin/main` when ready (currently 2 ahead, verify session-12 commits are on origin per the session-13 note).
+
 ### ⏹ SESSION STOP (2026-06-16, end of session 13)
 
 **State:** Session 13 RESOLVED + APPLIED + committed findings **#16 + #17** — the session-12 parked foundational question ("should the active player ever intervene on his own turn?") was decided **Model B′ (turn-based)**, and the whole intervention delivery model was reworked. **1 commit (`3dd95e5`) ahead of `origin/main`; the session-12 commits already appear on `origin/main` per local refs (the earlier "not pushed" note was stale — verify on next fetch). Tree clean.**
@@ -527,7 +543,7 @@ board: MinionOnBoard[]        // player's own side only
 graveyard: GraveyardEntry[]   // unified — minions + spells + artifacts
 artifacts: ArtifactOnBoard[]  // artifact row, cap 3 incl. the starter (hero-power REPLACEMENT, 2026-06-11); heroPower/heroPowerUsedThisTurn REMOVED
 inscriptions: Card[]          // INSCRIBED sigils (§3 Sigils, 2026-06-11): reactive cards pre-armed face-down; cap 3, one per definitionKey; identity hidden (directed/public sigil events); hand → inscriptions → graveyard on reveal
-cardsPlayedThisTurn: int      // Combo tracking (inscribing counts as a card play)
+cardsPlayedThisTurn: int      // Combo tracking — this player's ON-TURN plays (PlayCardAction incl. inscribe); off-turn invocations do NOT count; per-player reset at turn advance (#23, session 14)
 fatigueCounter: int           // empty-deck-draw counter; init 0, never resets; ++ then deal the new value to this hero (1,2,3,…) — §2A DrawCardAction
 ```
 

@@ -953,7 +953,9 @@ The last deliberately-deferred design question in the spec (point-D leftover). R
 
 **With this, the spec has ZERO open design questions.** Every item is decided, recorded, or explicitly re-scoped to v2 (crafting). Pre-implementation work remaining: plan reconciliation only.
 
-## Spec-review fix pass (session 10–13, 2026-06-12→16 — BATCH 1 + #11–#15 + Items 1–2 + Interturn ✅ APPLIED; #16/#17 ✅ APPLIED session 13; walk of #19–#33 pending)
+## Spec-review fix pass (session 10–14, 2026-06-12→17 — ✅ COMPLETE: all findings walked)
+
+> **Status as of session 14 (2026-06-17): the entire spec-review fix pass is DRAINED.** #1–#10b + #18 + #34 (batch 1, session 11); #10c moot (inversion→v2); #11–#15 + #22 + Items 1&2 + Interturn (session 12); #16/#17 (session 13, Model B′); **#19–#29 + #31–#33 (session 14, this batch); #30 moot; #35 reviewed→kept.** Next: end-of-pass **plan reconciliation** → Epic 01 / T1.1.
 
 Walking `notes/2026-06-12-spec-review-findings.md` finding-by-finding (user chose to review every item, fork or not; Q&A batches of ≤4). Status: **#1–#10b + #18 + #34 ✅ APPLIED (session 11); #10c MOOT (inversion parked to v2 — section below); #11 + #12 (both halves) + #13 + #14 + #15 + #22 ✅ APPLIED (session 12) together with two NEW user mechanics (Items 1 & 2) and the Interturn step; #35 NEW finding logged + reviewed → current behavior KEPT (revisit later, no spec edit); **#16 + #17 REVIEWED → PARKED** pending a foundational question (should the active player ever intervene on his own turn? — Model A attribution-based vs Model B turn-based); #19–#21/#23–#33 not yet walked.** Batch 1 grep-verified clean (no stale `isDamaged`/`SourceMinionId`/`MinionDamagedEvent`/`DeathrattleAction`/"hero-power damage"/"damaged enemy"/③ "is alive"/⑦ "④–⑥"); #11 batch grep-verified clean (no stale `repopulateOnTurnStart`/"renderer convenience"/turn-start neutral repopulation).
 
@@ -1033,6 +1035,30 @@ After a multi-turn design discussion (prior-art survey of MTG APNAP / YGO Quick-
 #### Prior parking (session 12, 2026-06-15) — superseded
 
 Walked the responder definition (#16). Provisionally decided **Model A (attribution-based):** responder = any player the action is *not* attributed to; active player never responds to his own actions but **does** respond to non-own (neutral/opponent-sourced) actions mid-cascade on his turn; a neutral (unattributed) action → both respond, **active player first** (user-decided ordering, = the canonical active→opponent→neutral order). The §3 responder paragraph + inscription cross-ref were **applied then reverted** (`git checkout`, **not committed**) because the user raised a FOUNDATIONAL question: *should the active player EVER intervene on his own turn?* His framing — everything cascading during his turn is, by chain-of-causation, his own action, so perhaps he just deals with the consequences → **Model B (turn-based):** active player never intervenes on his turn; only the off-turn player gets windows; the neutral both-case collapses to a single (off-turn) responder; **#17 mostly dissolves** (active player can't react to his own draw/fatigue). Model B is leaner; Model A keeps active-player mid-cascade self-saves. **Resume: DECIDE the foundational question first, then apply #16 (+#17) accordingly.** Full record: findings-doc #16/#17 + session-state Session 12. (Spec clean at `208b573`.)
+
+### #19–#33 ✅ APPLIED (session 14, 2026-06-17) — final batch, pass complete
+
+Walked the last block; **4 game-feel forks went to the user (all recommendations accepted), the rest applied mechanically.** Spec grep-verified clean (`MinionStatsChangedEvent` 0, `fewer than 7` 0, old `play/discard/return` 0).
+
+**Forks (user-decided):**
+- **#19 neutral-lane capacity** → an effect/system spawn into a full lane **fizzles at ④** (full-board-summon pattern; never a player play, so fizzle not reject). Refill path self-limits. §2A `SpawnNeutralMinionAction`.
+- **#21 full-hand bounce** → **HS-faithful: destroy → Deathrattle fires.** Decided after the user probed the edge: a *normal* bounce is **not a death** (no deathrattle); only a full-hand bounce becomes a `DestroyMinionAction` (a death → deathrattle). One invariant (deathrattle gated on death), not a special rule. `GiveCardAction` into full hand = burn (already "as for draw"). §2A `ReturnToHandAction` + §1 Minion→Card Transitions.
+- **#23 Combo accounting** → **on-turn only; off-turn invocation does NOT increment; per-player reset** (the new active player's, step 8). HS-faithful (no off-turn combo priming). §1 field + step 8 + `SubmitInterventionAction`.
+- **#24 PendingChoice timeout** → **server-rolled random** legal option (injected `SubmitChoiceAction`, logged → replay-exact; not the engine's `IRandom`), for fairness over always-leftmost; **mulligan timeout = keep all.** §3 Replay timeout bullet.
+
+**Shape forks (applied with recommendation):**
+- **#20 Reborn HP** → `SummonMinionAction.currentHealthOverride: int?` (null ⇒ full; clamp `[1,maxHealth]`; Reborn passes 1) — leaner than a dedicated variant. §2A + §4 ⑦ Phase 3.
+- **#27 `Start*` declarability** → window/choice-opening pinned as **engine-internal checkpoints**; `Start*`/`Respond*`/`Submit*` are system actions that **do not publish `ActionDeclaredEvent`** (no ③′) — closes the "cancel the opening of a window / counter a Discover" recursion. §4 ③′ step 1.
+
+**Mechanical:**
+- **#25** drop-list → "leaves the hand by any route" (§1 Card comment + §3 hosting table).
+- **#26** empty-pool guard → fire-time-honesty sentence (guard prevents *foreseeably*-empty fires only; same-cascade drain residue accepted). §3 Sigils.
+- **#28** → added `GameConstants.MaxBoardMinions = 7` + pointed `BoardFull` at it (rest of the block already landed session 12; turn-timer left out — Game-Server concern).
+- **#29** → deleted vestigial `MinionStatsChangedEvent` (no producer/consumer). §2B.
+- **#31 (+#33)** → new Unaddressed-Features "Inscription counterplay (no answer cards)" entry: cost-to-enable = additive `InscriptionSelector` + `DestroyInscriptionAction`; inscribe-locking note folded in.
+- **#32** → §3 Sigils Stealth mode-asymmetry sentence (invoked gated by `TargetStealthed`; inscribed random-K ignores Stealth — HS-consistent).
+
+**Plan impact (session-14 additions; fold into reconciliation):** Epic 01 data-model ticket → `GameConstants.MaxBoardMinions`, `SummonMinionAction.currentHealthOverride`, `cardsPlayedThisTurn` semantics, drop the `MinionStatsChangedEvent` ticket if any; neutral-zone epic → full-lane fizzle test; bounce/return ticket (Epic 16) → full-hand-destroy-fires-deathrattle test + normal-bounce-no-deathrattle test; combo ticket → invocation-doesn't-count + per-player-reset tests; Game-Server (out-of-library) note → PendingChoice timeout = server-random / mulligan keep-all (logged input); intervention/Discover epic → `Start*` not declarable (no ③′); sigils epic → Stealth mode-asymmetry test, drop-list-any-route, empty-pool fire-time semantics; Unaddressed Features → `InscriptionSelector` + `DestroyInscriptionAction` recorded (no ticket — additive, deferred indefinitely).
 
 ## Inversion parked to V2 (session 11, 2026-06-14)
 
