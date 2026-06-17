@@ -199,6 +199,33 @@ Resumed at the re-posed `heroAttack` question (temporary-vs-persistent). **The u
 
 **THE SPEC HAS ZERO OPEN DESIGN QUESTIONS** (the review found *execution* defects + holes, not unsettled design forks — except where flagged). Everything is decided, recorded, or explicitly v2 (crafting). **The only remaining pre-implementation work is the end-of-pass plan reconciliation** (all `Plan impact:` lists → epic/ticket files; weapon-scope deletion + artifact re-scope + sigil additions + the library-seam constraint + `HasTribe` + `InvertTargetAction` + `DestroyMinionAction` semantics; stale-name sweeps) → then **Epic 01 / T1.1**.
 
+### ⏹ SESSION STOP (2026-06-17, end of session 15)
+
+**State:** Session 15 = a **SECOND, fresh read-only SPEC REVIEW** (user-requested: "stop inconsistencies, logical bugs, wording, robustness before implementation") of the *post-fix-pass* spec, **followed by walking + applying the findings one-by-one** (distinct from the session-9 review, whose 33 findings are all already applied). New findings doc: **`notes/2026-06-17-spec-review-2.md`** — **17 findings (F1–F17) + 4 design notes (D1–D4)**. Read that doc's "▶ Walk progress" block FIRST on resume.
+
+**Applied this session (spec edited + grep-verified; F-tags trace to the findings doc):**
+- **F1 [H, BUG]** — going-second player started turn 1 with **0 mana** (turn-end refresh only refreshes the *ending* player; setup seeded only P1). Fix: **setup seeds BOTH players** `mana=maxMana=StartingMana(1)`. (§1 StartingMana + PlayerState, §4 Match Setup step 8.)
+- **F2 [H, CONTRADICTION]** — stale single-stage `SubmitInterventionAction` row deleted; `RespondInterventionAction`+`SubmitInterventionAction` moved into a new **"Responder-initiated (off-turn)"** §2A sub-table; `StartInterventionAction` stays system-issued.
+- **F3 [H, CONTRADICTION]** — "iteration bounded by mana, not a hard cap" reworded (3 sites) to **bounded by BOTH the per-turn press budget `MaxInterventionsPerTurn` AND mana** (each chained play = a fresh press ⇒ ≤3 intervention cards per opponent turn).
+- **F4 [M, HOLE] → option B** — `Filter` predicate mismatch fixed by factoring a shared **`IEntityPredicate`** (new §3 subsection): entity-property checks (`Friendly`/`Enemy`/`IsSelf`/`IsDamaged`/`IsMortallyWounded`/`HasTribe`/`HasKeyword`/`MinionTypeIs`/`CardTypeIs`/`CostAtLeast/AtMost`) + `All`/`Any`/`Not`. `ITargetSelector.Filter(selector, IEntityPredicate)` (negation now works in a Filter); `ITriggerCondition` reframed as event layer = `SelfIs*` + `Subject(p)`. Friendly/Enemy formalism moved into `IEntityPredicate`; `MinionsWithTribe/Keyword` → sugar; `Not` promoted to first-class; HasTribe-cond/MinionsWithTribe-sel duplication dissolved. **Plan impact:** Epic-08 selector ticket + T8.10 condition ticket both now build on `IEntityPredicate`.
+- **F5 [M, BUG] → option a** — Reborn granted *after* summon never fired. Fix: `rebornAvailable` = "charge unspent", **init `true` for every minion**, gated on `keywords has reborn && rebornAvailable`; reborn copy summoned false; Transform resets true; **Silence leaves it untouched** (keyword strip already gates it). (§1, §2A Transform+Silence, §4 ⑦ Phase 3.)
+- **F6+F7 [M, HOLE]** — Match Setup reordered to **deal → mulligan → Coin → sigil registration**: Coin after mulligan (unmulliganable); sigil hand-triggers registered once on the *final* post-mulligan hand (no swap bookkeeping — nothing reactive fires during Mulligan phase).
+- **F8 [M, DRIFT]** — added `NoInterventionBudget`, `NoMatchingCard` to the §2C `ActionRejectionCode` enum (server-authoritative Intervene guards).
+
+**⏳ STOPPED AT F9 + F10 — PRESENTED, user deferred the decision to next session.** Both proposals are captured verbatim in the findings doc's "▶ Walk progress" block + their own headings (`⏳ AWAITING DECISION`):
+- **F9** — define `ChoiceType {Discover,Target,Modal}` + `ChoiceOption(OptionId, EntityId?, DefinitionKey?, Label?)` and **drop `SubmitChoiceAction.choiceId`** (single pending choice ⇒ unambiguous). Open: lock-now vs defer the exact `ChoiceOption` fields to the Epic-01 data-model ticket.
+- **F10** — fizzled (countered) minion card currently → `GraveyardMinion` (wrongly resurrectable). Fork: **(a)** remove-from-game (recommended), **(b)** graveyard + non-resurrectable flag, **(c)** accept recyclable.
+
+**Still to walk after F9/F10:** **F11–F17** (low/wording — batch-apply: Battlecry-in-ResolveCardAction wording, directed-events sibling off-by-one, `turn.number` increment step, `EntityId` vs `string`, `autoSkipAll`/`SkipAll` naming, maxHealth≤0 "savable" caveat, `SpellDamageBonus` casing) and **D1–D4** (confirm-on-record design notes: own-turn self-save impossible by design, SpellCastEvent-on-countered-spell, Reborn-model note, press-cap-as-balance-lever).
+
+**▶ RESUME PLAN:**
+1. **Read `notes/2026-06-17-spec-review-2.md` "▶ Walk progress" block.** Decide **F9** (lock shape / defer fields) and **F10** (a/b/c), apply, then batch **F11–F17** and confirm **D1–D4**. Mark each `✅` in the findings doc.
+2. **Then the (still-pending) end-of-pass plan reconciliation** — now it must ALSO fold in this session's spec-review-2 changes (esp. F4's new `IEntityPredicate`, F1 mana seeding, F2/F3 intervention model, F5 Reborn) on top of the prior backlog → then **Epic 01 / T1.1**.
+
+**Git:** session-15 spec edits + findings doc + this stop block committed and pushed to `origin/main` at session end. Working from `main` (project convention — design-doc edits commit directly to main).
+
+**Note on style (carried):** walked findings one-by-one with present-tradeoff-+-recommend; user picked B on F4 explicitly to **maximize design space** (asked for examples of both A and B first — see [[feedback-design-fork-style]], [[feedback-deliverable-visibility]]).
+
 ### ⏹ SESSION STOP (2026-06-17, end of session 14)
 
 **State:** Session 14 **completed the SPEC-REVIEW FIX PASS** — walked the final block (#19–#21, #23–#29, #31–#33) and applied all of it to the spec. **The entire fix pass is now DRAINED** (#1–#10b/#18/#34 batch 1; #10c moot; #11–#15/#22/Items 1&2/Interturn session 12; #16/#17 session 13; #19–#33 this session; #30 moot; #35 reviewed→kept). **Spec grep-verified clean. Spec work committed (`f05a6e0`) + this stop-note; both PUSHED to `origin/main` at session end (`3dd95e5`/`70d9f05` were already on origin — the session-13 "verify on next fetch" note confirmed: only `f05a6e0` was ever local).**
