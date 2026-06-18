@@ -12,14 +12,16 @@ Categories: **CONTRADICTION** (two parts of the spec disagree) · **BUG** (logic
 
 ---
 
-## ▶ Walk progress (as of 2026-06-17, end of session 15)
+## ▶ Walk progress (as of 2026-06-19, end of session 16)
 
-**Applied to spec:** F1 ✅, F2 ✅, F3 ✅, F4 ✅ (option B), F5 ✅ (option a), F6 ✅, F7 ✅, F8 ✅.
-**⏳ RESUME HERE — F9 + F10 presented, awaiting the user's decision** (user stopped before deciding):
-- **F9** — proposed shape to lock (or defer `ChoiceOption` fields to Epic-01): `enum ChoiceType { Discover, Target, Modal }`; `record ChoiceOption(string OptionId, string? EntityId = null, string? DefinitionKey = null, string? Label = null)`; **drop `choiceId`** from `SubmitChoiceAction` → `{ playerId, selectedOptionId }` (single `PendingChoice` at a time ⇒ unambiguous). Decision pending: lock-now vs defer-fields.
-- **F10** — fork pending: **(a)** fizzled minion → removed-from-game (recommended, HS-faithful, avoids resurrection + undefined `diedOnTurn`); **(b)** graveyard + non-resurrectable flag; **(c)** accept recyclable.
+**Applied to spec:** F1 ✅, F2 ✅, F3 ✅, F4 ✅ (B), F5 ✅ (a), F6 ✅, F7 ✅, F8 ✅ (session 15); **F9 ✅ (lock-now), F10 ✅ (a, remove-from-game), F11 ✅, F12 ✅, F13 ✅, F14 ✅, F15 ✅, F16 ✅, F17 ✅ (session 16).**
+**F18 — RAISED then RETRACTED (session 16), no formula change.** During the F16 walk I mis-stated HS and proposed a "signed-Δ" fix to the #13 fall formula. **The user corrected the HS rule:** removing a Health buff **never kills** in HS — current Health is reduced only down to the printed stat, and if already below it, unchanged. That is *exactly* what the spec's existing `min(currentHealth, newMaxHealth)` already does, so **F18 is invalid; the formula stays `min(currentHealth + max(0, Δmax), newMax)`.** I did apply a **prose tightening** to §1 line 95 (replaced the misleading "existing damage persists" with the correct clamp-down/never-kills wording; sole death path = `maxHealth ≤ 0` from a *negative* buff/aura).
 
-**Not yet walked:** F11–F17 (wording/clarity sweep — likely batch-apply), D1–D4 (design notes to confirm on the record).
+**⏳ RESUME HERE — F19 (NEW finding, raised during the F11 review) is UNDER DISCUSSION, not yet decided or applied.** See the F19 section below for the full write-up + my recommendation + the two open calls. The user stopped the session mid-discussion of F19.
+
+**Still to walk after F19:** **D1–D4** (confirm-on-record design notes — *none applied yet*; I was interrupted mid-D1 edit, which was rejected). D1 = active player can't reactively save self on own turn (by design); D2 = `SpellCastEvent` fires at commitment even if the spell is then countered; D3 = Reborn model simplification (subsumed by F5 — no edit needed); D4 = press cap of 3 is a balance lever.
+
+After D1–D4 → spec-review-2 is COMPLETE → end-of-pass plan reconciliation (must now also fold in F1–F17 + the F19 resolution) → Epic 01 / T1.1.
 
 Each resolved finding carries a `✅ DECIDED + APPLIED` line under its heading with the touch-points.
 
@@ -174,7 +176,9 @@ Neither is specified, so opening-mulligan sigils could end up with stale or miss
 
 ---
 
-### F9 — [HOLE / M] `ChoiceType` values, `ChoiceOption` shape, and `SubmitChoiceAction.choiceId` are undefined   ⏳ AWAITING DECISION (resume here)
+### F9 — [HOLE / M] `ChoiceType` values, `ChoiceOption` shape, and `SubmitChoiceAction.choiceId` are undefined   ✅ DECIDED + APPLIED (2026-06-19, lock-now)
+
+**▶ Resolution:** **lock the shape in §1 now** (chosen as the design-space-maximizing option — the record is already maximal: all payload fields optional + all resolution logic lives in the unconstrained `PendingChoice.context` continuation, so a new mechanic never needs a new option field). Added to §1 Supporting types: `enum ChoiceType { Discover, Target, Modal }` (mulligan is NOT a member — rides `SubmitMulliganAction`) and `record ChoiceOption(string optionId, string? entityId = null, string? definitionKey = null, string? label = null)`. **Dropped `choiceId`** from `SubmitChoiceAction` → `{ playerId, selectedOptionId }`. **Invariant baked in:** `ChoiceOption` is a DISPLAY + ANSWER-ROUTING token, never the effect; `optionId` is the stable per-mode dispatch key the continuation switches on (a Modal mode's effect-spec lives in the card definition's `modes[]`, reached by `optionId` — never carried on the wire). The three patterns were worked through with payloads in the session reply (Discover→definitionKey, Target→entityId, Modal→optionId-only; the "deal 2 damage" number lives in the card definition, not the option). Touch-points: §1 `PendingChoice` block (new `ChoiceType`/`ChoiceOption`), §2A `SubmitChoiceAction` row.
 
 **Where:** `PendingChoice` ([:195](docs/superpowers/specs/2026-05-26-game-mechanics.md#L195)); `SubmitChoiceAction` ([:322](docs/superpowers/specs/2026-05-26-game-mechanics.md#L322)); `StartChoiceAction` ([:351](docs/superpowers/specs/2026-05-26-game-mechanics.md#L351)).
 
@@ -184,7 +188,9 @@ Neither is specified, so opening-mulligan sigils could end up with stale or miss
 
 ---
 
-### F10 — [DESIGN / M] A fizzled (countered) minion card lands in the graveyard as a `GraveyardMinion` — making it a resurrection/recursion target   ⏳ AWAITING DECISION (resume here)
+### F10 — [DESIGN / M] A fizzled (countered) minion card lands in the graveyard as a `GraveyardMinion` — making it a resurrection/recursion target   ✅ DECIDED + APPLIED (2026-06-19, option a)
+
+**▶ Resolution:** **(a) removed-from-game.** A fizzled minion card writes **no** graveyard entry — it never reached the board and never *died*, so it must not be a resurrection/recursion target, and there's no `diedOnTurn` to define. The instance simply ceases to exist (present in no zone; no tracked exile zone needed). HS-faithful (a countered card is not recyclable). Touch-point: §2A `ResolveCardAction` fizzle branch.
 
 **Where:** `ResolveCardAction` fizzle branch ([:316](docs/superpowers/specs/2026-05-26-game-mechanics.md#L316)).
 
@@ -201,33 +207,81 @@ Recommend (a). Either way, pin `diedOnTurn`/death-metadata semantics for the fiz
 
 ## C. Low severity / wording
 
-### F11 — [WORDING / L] "Battlecry resolves synchronously inside the PlayCard pipeline" predates the #34 commit/resolve split
+**✅ ALL APPLIED (2026-06-19, session 16) — batch sweep.** Per-finding touch-points below.
+
+### F11 — [WORDING / L] "Battlecry resolves synchronously inside the PlayCard pipeline" predates the #34 commit/resolve split   ✅ APPLIED
+**Done:** §3 line 731 reworded to "the **card-resolution pipeline (`ResolveCardAction` ④** — not the now-commit-only `PlayCardAction`, per #34)." *(NB: this reword is what surfaced **F19** — see below.)*
 
 **Where:** [:719](docs/superpowers/specs/2026-05-26-game-mechanics.md#L719). After #34, a minion card's summon + Battlecry run at **`ResolveCardAction` ④** (line 316), not at `PlayCardAction`. The sentence reads as if Battlecry runs in the (now commit-only) PlayCard handler. Reword to "inside the card-resolution pipeline (`ResolveCardAction` ④)".
 
-### F12 — [WORDING / L] Directed-events "each paired with a public thin sibling" is off by one
+### F12 — [WORDING / L] Directed-events "each paired with a public thin sibling" is off by one   ✅ APPLIED
+**Done:** reworded so `MulliganStartedEvent` is called out as directed **per-player with NO public sibling**, and the **other five** directed events each pair with a sibling.
 
 **Where:** [:362](docs/superpowers/specs/2026-05-26-game-mechanics.md#L362). Six directed events are listed but only five public siblings in the "respectively" mapping; `MulliganStartedEvent` has no sibling (it's directed *per-player*, each seeing their own — no public form needed). Reword so `MulliganStartedEvent` isn't implied to have a thin sibling.
 
-### F13 — [WORDING / L] `turn.number` increment is not in the Turn Lifecycle steps
+### F13 — [WORDING / L] `turn.number` increment is not in the Turn Lifecycle steps   ✅ APPLIED
+**Done:** increment added at Turn Lifecycle **step 6** (with a note that steps 1–5 deliberately read the *ending* turn's number — Freeze `frozenOnTurn`, Interturn `firstSpawnTurn`); Match Setup **step 8** now seeds `turn.number = 1` + `turn.activePlayerId`.
 
 **Where:** Turn Lifecycle ([:1148-1164](docs/superpowers/specs/2026-05-26-game-mechanics.md#L1148-L1164)). The 12 steps advance the active player (step 6) but never state where `turn.number` increments. It's referenced by Freeze (`frozenOnTurn == turn.number`) and the neutral-handover gate (`turn.number ≥ firstSpawnTurn`), so its advance point matters. Add it explicitly (presumably at step 6, "advance the active player").
 
-### F14 — [WORDING / L] `EntityId[]` selector return type vs `string` ids everywhere else
+### F14 — [WORDING / L] `EntityId[]` selector return type vs `string` ids everywhere else   ✅ APPLIED
+**Done:** §2A ID-convention note now defines `EntityId` as a **documented alias for `string`** in v1 (same instance ids; selector/predicate boundary uses the alias for intent only); a typed wrapper is a flagged possible Epic-01 refinement, not v1 — "treat `EntityId` ≡ `string` everywhere."
 
 **Where:** `ITargetSelector.Select` returns `EntityId[]` ([:732](docs/superpowers/specs/2026-05-26-game-mechanics.md#L732)), but every id field in §1/§2 is `string` (`minionId: string`, `m0`/`c1`/…). `EntityId` is never defined. Clarify whether it's an alias for `string` or a typed wrapper (the old Unity project used a typed-int wrapper — a deliberate choice worth restating). Pick one and use it consistently.
 
-### F15 — [WORDING / L] Naming collision: `PlayerState.autoSkipAll` vs `RespondInterventionAction.response = SkipAll`
+### F15 — [WORDING / L] Naming collision: `PlayerState.autoSkipAll` vs `RespondInterventionAction.response = SkipAll`   ✅ APPLIED
+**Done:** kept both names (rename avoided to not touch many refs); added a one-line "distinct from…" disambiguator at **both** sites — `autoSkipAll` = turn-spanning standing flag over ALL windows; `SkipAll` = a single response covering only the CURRENT action's ③′ + ⑥′.
 
 **Where:** [:81](docs/superpowers/specs/2026-05-26-game-mechanics.md#L81) and [:353](docs/superpowers/specs/2026-05-26-game-mechanics.md#L353). `autoSkipAll` (a standing, all-windows-this-turn preference) and `SkipAll` (a one-action response covering its ③′ + ⑥′) are different scopes but read alike — an implementer will conflate them. Consider renaming the response (`SkipRest`? `SkipThisAction`?) or adding a one-line "distinct from `autoSkipAll`" note at each site.
 
-### F16 — [WORDING / L] "Savable" overclaims for a maxHealth-collapse mortal wound
+### F16 — [WORDING / L] "Savable" overclaims for a maxHealth-collapse mortal wound   ✅ APPLIED
+**Done:** added the savability caveat at the `MinionMortallyWoundedEvent` row and §1 line 96 — only a **damage-domain** wound (`currentHealth ≤ 0 < maxHealth`) is **heal**-saveable; a **maxHealth-collapse** wound (`maxHealth ≤ 0`) is not (heal caps at `maxHealth ≤ 0`), only restoring `maxHealth` saves it. **"Savable" ≠ "heal-saveable."** *(This walk also triggered the F18 raise→retract + the §1 line-95 prose tightening — see the F18 record above.)*
 
 **Where:** `currentHealth` / aura-loss path ([:95-96](docs/superpowers/specs/2026-05-26-game-mechanics.md#L95-L96)); ⑥ ([:1068](docs/superpowers/specs/2026-05-26-game-mechanics.md#L1068)). A minion driven to `maxHealth ≤ 0` by aura/buff loss fires `MinionMortallyWoundedEvent` (the "savable" kind) — but `HealAction` caps at `maxHealth` (≤ 0), so **no heal can save it**; only restoring `maxHealth` (re-buff / the aura returning) can. The save window opens but the obvious save (heal) is a no-op. Worth a clarifying clause so the "savable" framing isn't misread as "heal-saveable."
 
-### F17 — [WORDING / L] `EffectContext.SpellDamageBonus` casing is inconsistent with sibling fields
+### F17 — [WORDING / L] `EffectContext.SpellDamageBonus` casing is inconsistent with sibling fields   ✅ APPLIED
+**Done:** `SpellDamageBonus` → `spellDamageBonus` (camelCase) at all 5 occurrences.
 
 **Where:** [:217](docs/superpowers/specs/2026-05-26-game-mechanics.md#L217). In the pseudo-record, `SpellDamageBonus` is PascalCase while `sourceId`/`sourcePlayerId`/`targetId`/`state` are camelCase. Cosmetic, but pick one convention for the data-model blocks so the eventual C# doesn't inherit ad-hoc casing.
+
+---
+
+## C′. Findings raised during the walk (session 16)
+
+### F18 — [non-finding] Health-buff removal and the #13 fall formula   ❌ RETRACTED (no change)
+
+**Origin:** raised by me during the F16 walk; I claimed HS *kills* a damaged, health-buffed minion when the buff is removed (e.g. silence a 2/4-at-current-2 → dies), and that the spec's `min(currentHealth, newMaxHealth)` fall formula (which *survives*) was therefore a bug needing a "signed-Δ" fix.
+
+**Why retracted:** **the user corrected the HS rule** — in Hearthstone, **removing a buff can never kill a minion.** Current Health is reduced only **down to the printed (base) stat**, and if it's *already* at/below that, it's **unchanged**. That is precisely what `min(currentHealth, newMaxHealth)` already computes (2/4-at-2 → silenced → `min(2,2)=2`, survives 2/2). So the spec was **already HS-correct**; my proposed signed-Δ fix would have *introduced* a divergence (killing minions HS never kills). **The formula `min(currentHealth + max(0, Δmax), newMax)` is unchanged.**
+
+**What WAS applied:** a **prose tightening** of §1 line 95 only — replaced the misleading "*existing damage persists*" with the correct clamp-down/never-kills wording, and pinned the sole death path as `maxHealth ≤ 0` from a **negative** buff/aura (the collapse / aura-loss-death path). No formula or behavior change.
+
+**Lesson (for the record):** verify HS rules before asserting them — the "damage-taken is preserved on buff removal" model is **not** how HS works for buff loss.
+
+### F19 — [HOLE / M, NEW] Battlecry / minion-summon ordering is under-pinned vs. the per-action epoch model   ⏳ UNDER DISCUSSION — **RESUME HERE** (not decided, not applied)
+
+**Origin:** surfaced while applying F11 (Battlecry runs at `ResolveCardAction` ④).
+
+**Where:** `ResolveCardAction` ④ "summon + Battlecry" ([:316](docs/superpowers/specs/2026-05-26-game-mechanics.md#L316)); Battlecry-before-triggers-live ([:731](docs/superpowers/specs/2026-05-26-game-mechanics.md#L731)); `OnSummon` "at summon / entering board" ([:111](docs/superpowers/specs/2026-05-26-game-mechanics.md#L111), [:800](docs/superpowers/specs/2026-05-26-game-mechanics.md#L800)); the per-action epoch filter `birthEpoch < originEpoch` ([:539-548](docs/superpowers/specs/2026-05-26-game-mechanics.md#L539-L548)); `ICardHandler.OnPlay`/`OnSummon` ([:894-899](docs/superpowers/specs/2026-05-26-game-mechanics.md#L894-L899)).
+
+**The intended ordering** when a minion card is played (two pipelined actions, #34 split):
+- **`PlayCardAction`** (commit, epoch N): pay/leave-hand/`CardPlayedEvent`, enqueue `ResolveCardAction`. ③′ here = *pre-cast* counter.
+- **`ResolveCardAction`** ④: (1) place body + emit `MinionSummonedEvent`; (2) **`OnPlay` (Battlecry)** resolves; (3) **`OnSummon`** registers the minion's persistent `ITrigger`s/Deathrattle/keyword-hooks → live. Line 731 intent: a minion must **not** trigger off its own Battlecry (HS-faithful). ③′ at `ResolveCardAction` = the **Counterspell** window.
+
+**The seam (why line 731 isn't actually delivered as written):**
+1. Battlecry effects are **enqueued actions** (a "Battlecry: deal 3" must be a real `DealDamageAction` so it gets its own ④ precedence + ③′/⑥′ windows — the locked all-damage-one-channel rule). So they run at **later epochs** N+1, N+2, ….
+2. The epoch model stamps a subscriber's `birthEpoch` with the epoch of the action whose ④ calls `Subscribe` (lines 542, 548). The natural reading "`OnSummon` at the summon's ④" stamps the minion's triggers `birthEpoch = N`.
+3. Then `N < N+1` is **true** ⇒ the minion **would** react to its own Battlecry's sub-actions — violating line 731. (The epoch filter only cleanly stops self-reaction to the *same-epoch* `MinionSummonedEvent`.)
+4. For line 731 to hold, `OnSummon` registration must be **deferred until the Battlecry sub-tree fully drains** and stamped with an epoch **past all of it**. Two things the spec never states: **(a)** that the Battlecry **sub-drains to completion** inside `ResolveCardAction` ④ ("synchronous-in-pipeline" gestures at it; a plain FIFO "register last" action doesn't guarantee it beats Battlecry *grandchildren*); **(b)** what epoch the deferred `OnSummon` gets.
+5. Unstated sub-question: does `MinionSummonedEvent` fire at **placement (before Battlecry)** — so other minions' "after you summon" reactions (Knife-Juggler-style) precede the Battlecry — or after? It's observable and currently undefined.
+
+**My recommendation (presented, awaiting the user):** option **(a)** — `ResolveCardAction` ④ = place body + emit `MinionSummonedEvent` → **Battlecry sub-drains to completion** (the response-resolution idiom, §4 line 1180) → **then** `OnSummon` registers triggers with a **fresh post-Battlecry epoch** (so `birthEpoch >` every Battlecry epoch ⇒ no self-trigger; Battlecry stays a fully-pipelined set of actions with windows; HS-faithful). Alternative = accept the minion *can* react to its own Battlecry and **drop line 731** (simpler, diverges from HS/intent).
+
+**Two open calls for next session:**
+1. Confirm **(a)** (synchronous Battlecry sub-drain + deferred post-Battlecry `OnSummon` epoch) vs. dropping line 731.
+2. Where `MinionSummonedEvent` fires — at **placement, before** the Battlecry (my lean) or after.
+
+**When resolved:** apply to §2A `ResolveCardAction` ④ (spell out the sub-drain + deferred registration), §3 line 731 (mechanism, not just intent), and likely a §3/§4 note tying the deferred `OnSummon` epoch to the filter; cross-check the token-summon path (`SummonMinionAction`: no `OnPlay`, `OnSummon` at entry — the two paths differ in `OnSummon` timing, which should be stated).
 
 ---
 
