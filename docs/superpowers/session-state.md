@@ -231,7 +231,7 @@ Style held: the user drove the generalization (probing Discover-immediate-resolu
 1. **DR1–DR6** (design-space calls; present-tradeoff-+-recommend cadence). DR1 (LoR-style burst/non-interceptable window tier — biggest UX/pacing risk) and DR2 (universal "pay-mana-draw" starter = Life-Tap-without-the-life-cost) are the two worth deciding before content design hardens; DR3 (neutral-lane RNG/first-crack), DR4 (going-second instrumentation), DR5 (alt-win seam in ⑧), DR6 (`MaxDeathWaves=16` tunable) lighter. Read `notes/2026-06-21-spec-review-3.md` §C.
 2. **Then the end-of-pass PLAN RECONCILIATION** — fold every `Plan impact:` list (borrow list + Fireplace + holes + sigils/artifacts + F1–F19 + D1–D4 + spec-review-3 G1–G8 + library-seam + stale-name sweeps) into `plans/2026-05-27-ccg-game-logic/` → **Epic 01 / T1.1**.
 
-**Git:** ⚠ **session-20 batch UNCOMMITTED** (spec + findings doc + session-state + memory) — pending the commit decision. Design-doc convention = work from `main`.
+**Git:** session-20 content batch committed + pushed to `origin/main` as **`d2312ab`** (spec + findings doc + session-state); memory updated out-of-repo. (This stop-block git-line tweak is a tiny follow-up commit on top.) Design-doc convention = work from `main`.
 
 ### ⏹ SESSION STOP (2026-06-23, end of session 19 — ran past midnight from 06-22)
 
