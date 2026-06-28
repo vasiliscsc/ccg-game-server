@@ -519,7 +519,7 @@ The pure validation predicate (§4 ③) returns `Ok | Rejection` using this same
 
 ## Section 3: Engine Architecture
 
-A small set of interfaces forms the engine: the **extensibility layer** (`IKeyword`, `IEffect`, `ITrigger` with its `ITriggerCondition`, the shared `IEntityPredicate`, `ITargetSelector`, `IAura`, `ICardHandler`) plus the **infrastructure backbone** (`IActionHandler`, `IEventBus`, `IActionQueue`, `IRandom`).
+A small set of interfaces forms the engine: the **extensibility layer** (`IKeyword`, `IEffect`, `ITrigger` with its `ITriggerCondition`, the shared `IEntityPredicate`, `ITargetSelector`, `IAura`, `IWinCondition`, `ICardHandler`) plus the **infrastructure backbone** (`IActionHandler`, `IEventBus`, `IActionQueue`, `IRandom`).
 
 ### `IActionHandler<TAction>`
 
@@ -905,6 +905,20 @@ Aura-granted tribes and keywords flow through `AuraEffect.GrantedTribes` / `Gran
 
 **Convergence caveat (single-pass recalc).** Recalc is **one pass, not a fixpoint iteration**. A self-conditional aura is well-defined as long as its **output does not feed its own predicate**: "while-damaged → +Attack" is stable because the predicate is on *health* and the output on *attack* (and the damage gap `maxHealth − currentHealth` is itself invariant under health auras, per the #13 rule, so the predicate is insensitive to other auras' read/write order). A self-**referential** aura whose output drives a predicate on the *same* stat — e.g. "while Attack ≤ 3, +2 Attack" — has **no stable value** (3→5→3→…) and would flip each recompute; such cards are **undefined — do not author them** (inherent ill-definition, not an engine bug to resolve). Cross-referential aura *pairs* (one reads what another writes) are deterministic per pass; their cross-pass behaviour is the general `IAura` ordering matter, independent of this note.
 
+### `IWinCondition`
+
+The **alternate-win seam** consulted by §4 ⑧. Same registration shape as `IAura` — an entry is registered when its host **enters its zone** (a quest artifact at equip, a minion at summon) and dropped when the host leaves; it is **pulled, not pushed** — ⑧ re-runs every registered `Evaluate` against the freshly-settled state, never a flag set mid-cascade (see ⑧ for why pull-at-settle is the form that composes with dying-window saves and the mutual-lethal draw rule).
+
+```csharp
+interface IWinCondition {
+    string ConditionId { get; }
+    string SourceEntityId { get; }          // the hosting entity (minion or artifact), as IAura
+    EntityId? Evaluate(GameState state);    // the player who wins by THIS condition, or null
+}
+```
+
+The hero-death check is **not** an `IWinCondition` — it is ⑧'s hardwired built-in (always evaluated, no host). **v1 ships zero registered `IWinCondition`s** (deck-out/fatigue already route through the built-in hero check as damage); the interface and ⑧'s list-iteration exist so alternate-win content — quest-reward-as-win, mill-as-win, alternate-resource thresholds — is **v2 content on a fixed seam**, never settle-loop surgery. A registered condition that fires publishes the ordinary `GameEndedEvent`; a future content reason (e.g. `QuestComplete`) joins the §2B `reason` set when the first such card is authored.
+
 ### `ICardHandler`
 
 Top-level extensibility point. Cards with non-trivial behaviour have a `handlerKey` in their definition that maps to an `ICardHandler` implementation. Cards without custom logic use `DefaultCardHandler`, which reads the `definition` JSON and dispatches to standard `IEffect` implementations.
@@ -1131,7 +1145,7 @@ Auto reactions (inscriptions, board/artifact triggers) do **not** open ⑥′ wi
 
 The action is **not** rolled back and replayed — rollback would restore the exact state the runaway re-triggers from, so it cannot resolve the match. Aborting the whole match is the only safe escalation. There is no rollback/snapshot dependency: the engine simply tears the match down.
 
-This is a last-line backstop. The primary mitigation is upstream content validation at card-load time (flag obvious self-feeding patterns such as a deathrattle that summons a 0-health token); general termination is undecidable, which is why the runtime cap remains.
+This is a last-line backstop. The primary mitigation is upstream content validation at card-load time (flag obvious self-feeding patterns such as a deathrattle that summons a 0-health token); general termination is undecidable, which is why the runtime cap remains. **`MaxDeathWaves = 16` is provisional (DR6, 2026-06-28)** — a `GameConstant`, hence tunable, set high enough that it should only ever bite a true runaway, not a deep-but-finite *legal* cascade (e.g. many deathrattle-summon-deathrattle bodies across both boards + the neutral lane). It is to be revisited against real cascade-depth telemetry, and the card-load validator (above) is the real guard — the runtime cap must never be the thing that voids a board a player legitimately built toward.
 
 **`StabilizationAbortReport` (telemetry — scenario-reproducible).** Formatted so a developer can paste it directly into a `CCG.GameLogic.Tests` scenario fixture (Build → Script → Assert), guaranteeing the runaway is reproduced and the abort behavior never regresses:
 
@@ -1149,9 +1163,15 @@ A regression scenario built from a report asserts: submitting `triggeringAction`
 
 ### ⑧ Win Condition Check
 
-**Settle stage — runs immediately after ⑦**, at the same queue-empty settle point. If any hero has health ≤ 0: if both ≤ 0 the game is a draw, otherwise the other player wins. `GameEndedEvent` is published and `phase` is set to `Ended`.
+**Settle stage — runs immediately after ⑦**, at the same queue-empty settle point. ⑧ evaluates the **registered win-condition list** against the freshly-settled state and resolves the outcome:
 
-Mirroring ⑦'s pending-death window: a hero that crosses to ≤0 **mid-cascade** publishes **`HeroMortallyWoundedEvent`** at that moment (from the damaging action's ④), but the loss is **not** finalized until this settle — so a post-reaction save (heal-above-0 / immune, §3) enqueued onto the still-draining queue resolves first, and ⑧ then re-reads actual hero health and finds it survived. This gives heroes the same dying-window the death wave gives minions; simultaneous mutual lethality still settles here as a draw.
+- The **built-in entry** is the hero-death check (always present, never a registered card effect): if any hero has health ≤ 0 it yields that hero's *opponent* as winner.
+- Each **registered `IWinCondition`** (§3 — the aura-shaped declarative win-seam; v1 ships **only** the built-in entry, alternate-win content is v2) contributes `Evaluate(state) → winnerId?` (null = "no win from me"): mill-as-win, a completed quest counter (`ArtifactOnBoard.charges ≥ goal`), an alternate-resource threshold, etc.
+- **Resolution:** if exactly one player is yielded as winner, that player wins; if **two different** players are yielded on the same settle (mutual hero-death, or a quest completing on the very settle its holder is killed), it is a **draw** — the general form of the mutual-lethal rule. `GameEndedEvent { winnerId?, reason }` is published and `phase` is set to `Ended`.
+
+**Why a list checked *here*, not a flag pushed mid-cascade (DR5, 2026-06-28).** Win conditions register/deregister zone-scoped exactly like `IAura`/triggers, and ⑧ **re-evaluates them fresh at this settle** — none is marked mid-cascade. This inherits the correctness the hero check already relies on: a condition momentarily true mid-cascade but **undone by a post-reaction save before the settle** (the dying holder healed, the quest counter decremented, the alt-win artifact destroyed) correctly does **not** win, because ⑧ reads the settled board, not a stale snapshot. (A "push a `pendingWin` flag when the triggering event fires" design would have to re-verify the condition at this settle anyway — collapsing back into exactly this predicate; pull-at-settle is the form that composes with saves and mutual-lethal.)
+
+Mirroring ⑦'s pending-death window: a hero that crosses to ≤0 **mid-cascade** publishes **`HeroMortallyWoundedEvent`** at that moment (from the damaging action's ④), but the loss is **not** finalized until this settle — so a post-reaction save (heal-above-0 / immune, §3) enqueued onto the still-draining queue resolves first, and ⑧ then re-reads actual hero health and finds it survived. This gives heroes the same dying-window the death wave gives minions; simultaneous mutual lethality still settles here as a draw — the built-in instance of the resolution rule above.
 
 ### ⑨ Dequeue / Drive Loop
 
